@@ -15,15 +15,21 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub(crate) struct RuntimeState {
     pub(crate) blocking_cli_pids: Vec<u32>,
     pub(crate) extension_pids: Vec<u32>,
+    pub(crate) vscode_extension_pids: Vec<u32>,
+    pub(crate) antigravity_extension_pids: Vec<u32>,
     pub(crate) vscode_pids: Vec<u32>,
     pub(crate) vscode_launch_path: Option<String>,
+    pub(crate) antigravity_pids: Vec<u32>,
+    pub(crate) antigravity_launch_path: Option<String>,
     pub(crate) codex_app_pids: Vec<u32>,
     pub(crate) codex_app_launch_path: Option<String>,
 }
 
 impl RuntimeState {
     pub(crate) fn restartable_process_count(&self) -> usize {
-        self.extension_pids.len() + self.vscode_pids.len() + self.codex_app_pids.len()
+        usize::from(!self.vscode_extension_pids.is_empty())
+            + usize::from(!self.antigravity_extension_pids.is_empty())
+            + usize::from(!self.codex_app_pids.is_empty())
     }
 }
 
@@ -38,6 +44,10 @@ struct ProcessRecord {
 pub(crate) fn inspect_runtime_state() -> anyhow::Result<RuntimeState> {
     let processes = list_processes()?;
     Ok(classify_processes(processes))
+}
+
+pub(crate) fn current_codex_app_pids() -> anyhow::Result<Vec<u32>> {
+    Ok(inspect_runtime_state()?.codex_app_pids)
 }
 
 pub(crate) fn terminate_pids(pids: &[u32]) -> usize {
@@ -125,11 +135,34 @@ pub(crate) fn relaunch_vscode(executable_path: Option<&str>, existing_pids: &[u3
     }
 }
 
-pub(crate) fn relaunch_codex_app(executable_path: Option<&str>) -> bool {
+pub(crate) fn relaunch_antigravity(executable_path: Option<&str>, existing_pids: &[u32]) -> bool {
     #[cfg(windows)]
     {
+        let executable_candidates = antigravity_launch_candidates(executable_path);
+        let cli_candidates = antigravity_cli_candidates(executable_path);
+        return relaunch_antigravity_with_retries(
+            &executable_candidates,
+            &cli_candidates,
+            existing_pids,
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        executable_path.is_some_and(|path| launch_detached(path, &[]))
+    }
+}
+
+pub(crate) fn relaunch_codex_app(executable_path: Option<&str>, existing_pids: &[u32]) -> bool {
+    #[cfg(windows)]
+    {
+        let store_app_ids = codex_store_app_ids(executable_path);
+        if relaunch_store_app_with_retries(&store_app_ids, is_codex_app_process, existing_pids) {
+            return true;
+        }
+
         let candidates = codex_app_launch_candidates(executable_path);
-        return relaunch_with_retries(&candidates, &[], is_codex_app_process);
+        return relaunch_with_retries(&candidates, &[], is_codex_app_process, existing_pids);
     }
 
     #[cfg(not(windows))]
@@ -146,8 +179,26 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
             continue;
         }
 
+        if is_cursor_process(&process) {
+            continue;
+        }
+
         if is_extension_runtime(&process) {
             state.extension_pids.push(process.pid);
+            if is_vscode_extension_runtime(&process) {
+                state.vscode_extension_pids.push(process.pid);
+            }
+            if is_antigravity_extension_runtime(&process) {
+                state.antigravity_extension_pids.push(process.pid);
+            }
+            continue;
+        }
+
+        if is_antigravity_process(&process) {
+            state.antigravity_pids.push(process.pid);
+            if state.antigravity_launch_path.is_none() {
+                state.antigravity_launch_path = process.launch_target();
+            }
             continue;
         }
 
@@ -161,8 +212,18 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
         if is_codex_app_process(&process) {
             state.codex_app_pids.push(process.pid);
-            if state.codex_app_launch_path.is_none() {
-                state.codex_app_launch_path = process.launch_target();
+            if let Some(candidate) = process.launch_target() {
+                let should_replace = state
+                    .codex_app_launch_path
+                    .as_deref()
+                    .is_none_or(|existing| {
+                        !is_primary_codex_app_launch_target(existing)
+                            && is_primary_codex_app_launch_target(&candidate)
+                    });
+
+                if should_replace {
+                    state.codex_app_launch_path = Some(candidate);
+                }
             }
             continue;
         }
@@ -174,7 +235,10 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
     dedupe(&mut state.blocking_cli_pids);
     dedupe(&mut state.extension_pids);
+    dedupe(&mut state.vscode_extension_pids);
+    dedupe(&mut state.antigravity_extension_pids);
     dedupe(&mut state.vscode_pids);
+    dedupe(&mut state.antigravity_pids);
     dedupe(&mut state.codex_app_pids);
 
     state
@@ -199,7 +263,7 @@ fn list_processes() -> anyhow::Result<Vec<ProcessRecord>> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -in @('Code.exe','codex.exe','Codex.exe','node.exe') -or $_.CommandLine -match 'codex|@openai/codex|openai.chatgpt|vscode|Code.app|Codex.app') } | ForEach-Object { \"$($_.ProcessId)`t$($_.Name)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }",
+                "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -in @('Code.exe','Antigravity.exe','codex.exe','Codex.exe','node.exe') -or $_.CommandLine -match 'codex|@openai/codex|openai.chatgpt|antigravity|vscode|Code.app|Codex.app') } | ForEach-Object { \"$($_.ProcessId)`t$($_.Name)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }",
             ])
             .output()
             .context("Failed to inspect running processes via PowerShell")?;
@@ -308,7 +372,59 @@ fn is_extension_runtime(process: &ProcessRecord) -> bool {
     inside_editor_extension && (haystack.contains("app-server") || looks_like_codex_binary(process))
 }
 
+fn is_vscode_extension_runtime(process: &ProcessRecord) -> bool {
+    if !is_extension_runtime(process) {
+        return false;
+    }
+
+    let haystack = process.combined_haystack();
+    (haystack.contains(".vscode") || haystack.contains("vscode-server"))
+        && !haystack.contains(".antigravity")
+}
+
+fn is_antigravity_extension_runtime(process: &ProcessRecord) -> bool {
+    is_extension_runtime(process) && process.combined_haystack().contains(".antigravity")
+}
+
+fn is_cursor_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let haystack = process.combined_haystack();
+    let launch_target = process.launch_target_lower().unwrap_or_default();
+
+    name == "cursor"
+        || name == "cursor.exe"
+        || file_name_lower(&launch_target).as_deref() == Some("cursor")
+        || file_name_lower(&launch_target).as_deref() == Some("cursor.exe")
+        || haystack.contains("\\cursor\\")
+        || haystack.contains("/cursor.app/")
+        || haystack.contains("appdata\\local\\programs\\cursor")
+        || haystack.contains("\\program files\\cursor\\")
+        || haystack.contains("cursor.exe")
+            && (haystack.contains("--vscode-window-config=") || haystack.contains("--user-data-dir="))
+}
+
+fn is_antigravity_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let haystack = process.combined_haystack();
+    let launch_target = process.launch_target_lower().unwrap_or_default();
+
+    name == "antigravity"
+        || name == "antigravity.exe"
+        || file_name_lower(&launch_target).as_deref() == Some("antigravity")
+        || file_name_lower(&launch_target).as_deref() == Some("antigravity.exe")
+        || haystack.contains("\\antigravity\\")
+        || haystack.contains("/antigravity.app/")
+        || haystack.contains("appdata\\local\\programs\\antigravity")
+        || haystack.contains("appdata\\roaming\\antigravity")
+        || haystack.contains("--app-user-model-id=google.antigravity")
+        || haystack.contains("--app-path=") && haystack.contains("antigravity")
+}
+
 fn is_vscode_process(process: &ProcessRecord) -> bool {
+    if is_cursor_process(process) || is_antigravity_process(process) {
+        return false;
+    }
+
     let name = process.name.to_ascii_lowercase();
     let haystack = process.combined_haystack();
     let launch_target = process.launch_target_lower().unwrap_or_default();
@@ -332,18 +448,36 @@ fn is_codex_app_process(process: &ProcessRecord) -> bool {
 
     let haystack = process.combined_haystack();
     let launch_target = process.launch_target_lower().unwrap_or_default();
-
-    let looks_like_app_path = haystack.contains("/codex.app/")
-        || haystack.contains("\\program files\\codex")
+    let has_codex_app_identity = haystack.contains("/codex.app/")
+        || haystack.contains("\\program files\\codex\\")
+        || haystack.contains("\\program files\\openai codex\\")
         || haystack.contains("appdata\\local\\programs\\codex")
+        || haystack.contains("appdata\\local\\programs\\openai codex")
+        || haystack.contains("\\windowsapps\\openai.codex_")
         || haystack.contains("/applications/codex.app/")
         || haystack.contains("/opt/codex/")
+        || haystack.contains("--app-user-model-id=com.openai.codex")
+        || haystack.contains("--annotation=_productname=codex")
+        || haystack.contains("--user-data-dir=\"c:\\users\\")
+            && haystack.contains("appdata\\roaming\\codex")
         || launch_target.contains("/codex.app/")
-        || launch_target.contains("\\program files\\codex")
-        || launch_target.contains("appdata\\local\\programs\\codex");
+        || launch_target.contains("\\program files\\codex\\")
+        || launch_target.contains("\\program files\\openai codex\\")
+        || launch_target.contains("appdata\\local\\programs\\codex")
+        || launch_target.contains("appdata\\local\\programs\\openai codex")
+        || launch_target.contains("\\windowsapps\\openai.codex_");
+    let looks_like_app_runtime = haystack.contains("--type=")
+        || haystack.contains("--utility-sub-type=")
+        || haystack.contains("--user-data-dir=")
+        || haystack.contains("--app-path=")
+        || haystack.contains("crashpad-handler")
+        || haystack.contains("gpu-process")
+        || haystack.contains("renderer")
+        || haystack.contains("app-server")
+        || is_primary_codex_app_launch_target(&launch_target);
 
-    looks_like_app_path
-        && !haystack.contains("app-server")
+    has_codex_app_identity
+        && looks_like_app_runtime
         && !haystack.contains("@openai/codex")
         && !haystack.contains("node_modules/@openai/codex")
         && !haystack.contains("\\node_modules\\@openai\\codex")
@@ -377,6 +511,18 @@ fn looks_like_codex_binary(process: &ProcessRecord) -> bool {
         .as_deref()
         .and_then(file_name_lower)
         .is_some_and(|file_name| file_name == "codex" || file_name == "codex.exe")
+}
+
+fn is_primary_codex_app_launch_target(path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    let looks_like_codex_executable = file_name_lower(path)
+        .as_deref()
+        .is_some_and(|file_name| file_name == "codex" || file_name == "codex.exe");
+
+    looks_like_codex_executable
+        && !normalized.contains("\\app\\resources\\codex.exe")
+        && !normalized.contains("/app/resources/codex")
+        && !normalized.contains(" app-server")
 }
 
 fn terminate_pid(pid: u32) -> bool {
@@ -436,6 +582,21 @@ fn escape_powershell_single_quoted(value: &str) -> String {
 }
 
 #[cfg(windows)]
+fn launch_windows_store_app(app_id: &str) -> bool {
+    let escaped_app_id = escape_powershell_single_quoted(app_id);
+    let command = format!(
+        "Start-Process -FilePath 'explorer.exe' -ArgumentList 'shell:AppsFolder\\{escaped_app_id}'"
+    );
+
+    Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
 fn launch_uri_detached(uri: &str) -> bool {
     Command::new("powershell")
         .creation_flags(CREATE_NO_WINDOW)
@@ -481,7 +642,7 @@ fn relaunch_vscode_with_retries(
     let mut dispatched_launch = false;
 
     for candidate in cli_candidates {
-        if !run_vscode_cli(candidate, &[]) {
+        if !run_cli_command(candidate, &[]) {
             continue;
         }
 
@@ -498,6 +659,39 @@ fn relaunch_vscode_with_retries(
 
         dispatched_launch = true;
         if confirm_vscode_relaunch(existing_pids) {
+            return true;
+        }
+    }
+
+    dispatched_launch
+}
+
+#[cfg(windows)]
+fn relaunch_antigravity_with_retries(
+    executable_candidates: &[String],
+    cli_candidates: &[String],
+    existing_pids: &[u32],
+) -> bool {
+    let mut dispatched_launch = false;
+
+    for candidate in cli_candidates {
+        if !run_cli_command(candidate, &[]) {
+            continue;
+        }
+
+        dispatched_launch = true;
+        if confirm_antigravity_relaunch(existing_pids) {
+            return true;
+        }
+    }
+
+    for candidate in executable_candidates {
+        if !launch_detached(candidate, &[]) {
+            continue;
+        }
+
+        dispatched_launch = true;
+        if confirm_antigravity_relaunch(existing_pids) {
             return true;
         }
     }
@@ -523,25 +717,88 @@ fn confirm_vscode_relaunch(existing_pids: &[u32]) -> bool {
 }
 
 #[cfg(windows)]
+fn confirm_antigravity_relaunch(existing_pids: &[u32]) -> bool {
+    if wait_for_new_matching_process(
+        is_antigravity_process,
+        existing_pids,
+        Duration::from_millis(2000),
+    ) {
+        return true;
+    }
+
+    sleep(Duration::from_millis(500));
+
+    list_processes()
+        .map(|processes| {
+            processes
+                .into_iter()
+                .any(|process| is_antigravity_process(&process))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
 fn relaunch_with_retries(
     candidates: &[String],
     args: &[&str],
     matcher: fn(&ProcessRecord) -> bool,
+    existing_pids: &[u32],
 ) -> bool {
     if candidates.is_empty() {
         return false;
     }
 
-    for candidate in candidates {
-        if !launch_detached(candidate, args) {
-            continue;
+    for attempt in 0..3 {
+        let known_existing = known_matching_pids(matcher, existing_pids);
+
+        for candidate in candidates {
+            if !launch_detached(candidate, args) {
+                continue;
+            }
+
+            if wait_for_new_matching_process(
+                matcher,
+                &known_existing,
+                Duration::from_millis(2500 + (attempt * 1000) as u64),
+            ) {
+                return true;
+            }
         }
 
-        if wait_for_matching_process(matcher, Duration::from_millis(1500)) {
-            return true;
+        sleep(Duration::from_millis(1200 + (attempt * 600) as u64));
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn relaunch_store_app_with_retries(
+    app_ids: &[String],
+    matcher: fn(&ProcessRecord) -> bool,
+    existing_pids: &[u32],
+) -> bool {
+    if app_ids.is_empty() {
+        return false;
+    }
+
+    for attempt in 0..3 {
+        let known_existing = known_matching_pids(matcher, existing_pids);
+
+        for app_id in app_ids {
+            if !launch_windows_store_app(app_id) {
+                continue;
+            }
+
+            if wait_for_new_matching_process(
+                matcher,
+                &known_existing,
+                Duration::from_millis(3500 + (attempt * 1500) as u64),
+            ) {
+                return true;
+            }
         }
 
-        return true;
+        sleep(Duration::from_millis(1600 + (attempt * 800) as u64));
     }
 
     false
@@ -576,6 +833,26 @@ fn wait_for_new_matching_process(
 }
 
 #[cfg(windows)]
+fn known_matching_pids(
+    matcher: fn(&ProcessRecord) -> bool,
+    seed_pids: &[u32],
+) -> Vec<u32> {
+    let mut pids = seed_pids.to_vec();
+
+    if let Ok(processes) = list_processes() {
+        pids.extend(
+            processes
+                .into_iter()
+                .filter(|process| matcher(process))
+                .map(|process| process.pid),
+        );
+    }
+
+    dedupe(&mut pids);
+    pids
+}
+
+#[cfg(windows)]
 #[allow(dead_code)]
 fn vscode_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
     let mut candidates = Vec::new();
@@ -602,7 +879,7 @@ fn dispatch_vscode_command_uri(executable_path: Option<&str>, uri: &str) -> bool
     let cli_candidates = vscode_cli_candidates(executable_path);
 
     for candidate in &cli_candidates {
-        if run_vscode_cli(candidate, &["--open-url", uri]) {
+        if run_cli_command(candidate, &["--open-url", uri]) {
             return true;
         }
     }
@@ -611,7 +888,7 @@ fn dispatch_vscode_command_uri(executable_path: Option<&str>, uri: &str) -> bool
 }
 
 #[cfg(windows)]
-fn run_vscode_cli(program: &str, args: &[&str]) -> bool {
+fn run_cli_command(program: &str, args: &[&str]) -> bool {
     let escaped_program = escape_powershell_single_quoted(program);
     let escaped_args = args
         .iter()
@@ -654,6 +931,27 @@ fn vscode_cli_candidates(executable_path: Option<&str>) -> Vec<String> {
 }
 
 #[cfg(windows)]
+fn antigravity_cli_candidates(executable_path: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = executable_path {
+        if let Some(cli_path) = antigravity_cli_candidate(path) {
+            push_launch_candidate(&mut candidates, &cli_path);
+        }
+    }
+
+    for path in lookup_windows_command("antigravity.cmd") {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    for path in known_antigravity_cli_paths() {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
 fn codex_app_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
     let mut candidates = Vec::new();
 
@@ -666,6 +964,83 @@ fn codex_app_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
     }
 
     candidates
+}
+
+#[cfg(windows)]
+fn codex_store_app_ids(executable_path: Option<&str>) -> Vec<String> {
+    let mut app_ids = Vec::new();
+
+    if let Some(path) = executable_path {
+        if let Some(app_id) = codex_store_app_id_from_path(path) {
+            push_store_app_id(&mut app_ids, &app_id);
+        }
+    }
+
+    for app_id in lookup_codex_store_app_ids() {
+        push_store_app_id(&mut app_ids, &app_id);
+    }
+
+    app_ids
+}
+
+#[cfg(windows)]
+fn push_store_app_id(app_ids: &mut Vec<String>, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let normalized = trimmed.to_string();
+    if !app_ids
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
+    {
+        app_ids.push(normalized);
+    }
+}
+
+#[cfg(windows)]
+fn lookup_codex_store_app_ids() -> Vec<String> {
+    let Ok(output) = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-StartApps | Where-Object { $_.Name -eq 'Codex' -or $_.AppID -match '^OpenAI\\.Codex_.*!App$' } | Select-Object -ExpandProperty AppID",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(windows)]
+fn codex_store_app_id_from_path(path: &str) -> Option<String> {
+    let normalized = path.replace('/', "\\");
+    let lower = normalized.to_ascii_lowercase();
+    let marker = "\\windowsapps\\";
+    let start = lower.find(marker)? + marker.len();
+    let package_full_name = normalized[start..].split('\\').next()?;
+    let (package_prefix, publisher_id) = package_full_name.rsplit_once("__")?;
+    let package_name = package_prefix.split('_').next()?;
+
+    if package_name.is_empty() || publisher_id.is_empty() {
+        return None;
+    }
+
+    Some(format!("{package_name}_{publisher_id}!App"))
 }
 
 #[cfg(windows)]
@@ -749,6 +1124,25 @@ fn vscode_cli_candidate(path: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+fn antigravity_cli_candidate(path: &str) -> Option<String> {
+    let candidate = Path::new(path);
+    let file_name = candidate.file_name()?.to_str()?.to_ascii_lowercase();
+
+    if file_name == "antigravity.cmd" && candidate.exists() {
+        return Some(candidate.to_string_lossy().into_owned());
+    }
+
+    if file_name == "antigravity.exe" {
+        let cli = candidate.parent()?.join("bin").join("antigravity.cmd");
+        if cli.exists() {
+            return Some(cli.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
 #[allow(dead_code)]
 fn known_vscode_paths() -> Vec<String> {
     let mut paths = vec![
@@ -779,6 +1173,61 @@ fn known_vscode_cli_paths() -> Vec<String> {
             .join("Microsoft VS Code")
             .join("bin")
             .join("code.cmd");
+        paths.push(base.to_string_lossy().into_owned());
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn antigravity_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = executable_path {
+        push_launch_candidate(&mut candidates, path);
+    }
+
+    for path in lookup_windows_command("Antigravity.exe") {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    for path in known_antigravity_paths() {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn known_antigravity_paths() -> Vec<String> {
+    let mut paths = vec![
+        String::from(r"D:\Apps\Antigravity\Antigravity.exe"),
+        String::from(r"C:\Program Files\Antigravity\Antigravity.exe"),
+        String::from(r"C:\Program Files (x86)\Antigravity\Antigravity.exe"),
+    ];
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data).join("Programs").join("Antigravity");
+        paths.push(base.join("Antigravity.exe").to_string_lossy().into_owned());
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn known_antigravity_cli_paths() -> Vec<String> {
+    let mut paths = vec![
+        String::from(r"D:\Apps\Antigravity\bin\antigravity.cmd"),
+        String::from(r"C:\Program Files\Antigravity\bin\antigravity.cmd"),
+        String::from(r"C:\Program Files (x86)\Antigravity\bin\antigravity.cmd"),
+    ];
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data)
+            .join("Programs")
+            .join("Antigravity")
+            .join("bin")
+            .join("antigravity.cmd");
         paths.push(base.to_string_lossy().into_owned());
     }
 
@@ -899,7 +1348,10 @@ mod tests {
         )]);
 
         assert_eq!(state.extension_pids, vec![202]);
+        assert_eq!(state.vscode_extension_pids, vec![202]);
+        assert!(state.antigravity_extension_pids.is_empty());
         assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 1);
     }
 
     #[test]
@@ -916,6 +1368,42 @@ mod tests {
             state.vscode_launch_path.as_deref(),
             Some(r"D:\Apps\Microsoft VS Code\Code.exe")
         );
+        assert_eq!(state.restartable_process_count(), 0);
+    }
+
+    #[test]
+    fn classifies_antigravity_window_and_captures_launch_path() {
+        let state = classify_processes(vec![record(
+            304,
+            "Antigravity.exe",
+            Some(r"D:\Apps\Antigravity\Antigravity.exe"),
+            r#""D:\Apps\Antigravity\Antigravity.exe" --type=renderer --user-data-dir="C:\Users\me\AppData\Roaming\Antigravity" --app-user-model-id=Google.Antigravity --vscode-window-config=vscode:ag"#,
+        )]);
+
+        assert_eq!(state.antigravity_pids, vec![304]);
+        assert_eq!(
+            state.antigravity_launch_path.as_deref(),
+            Some(r"D:\Apps\Antigravity\Antigravity.exe")
+        );
+        assert!(state.vscode_pids.is_empty());
+        assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 0);
+    }
+
+    #[test]
+    fn classifies_antigravity_extension_worker_as_restartable() {
+        let state = classify_processes(vec![record(
+            305,
+            "codex.exe",
+            Some(r"C:\Users\me\.antigravity\extensions\openai.chatgpt\bin\windows-x86_64\codex.exe"),
+            r#"C:\Users\me\.antigravity\extensions\openai.chatgpt\bin\windows-x86_64\codex.exe app-server --analytics-default-enabled"#,
+        )]);
+
+        assert_eq!(state.extension_pids, vec![305]);
+        assert_eq!(state.antigravity_extension_pids, vec![305]);
+        assert!(state.vscode_extension_pids.is_empty());
+        assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 1);
     }
 
     #[test]
@@ -932,6 +1420,47 @@ mod tests {
             state.codex_app_launch_path.as_deref(),
             Some("/Applications/Codex.app/Contents/MacOS/Codex")
         );
+    }
+
+    #[test]
+    fn windows_store_codex_app_and_app_server_are_not_cli() {
+        let state = classify_processes(vec![
+            record(
+                808,
+                "codex.exe",
+                Some(
+                    r"C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\resources\codex.exe",
+                ),
+                r#""C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\resources\codex.exe" app-server --analytics-default-enabled"#,
+            ),
+            record(
+                809,
+                "Codex.exe",
+                Some(
+                    r"C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\Codex.exe",
+                ),
+                r#""C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\Codex.exe" --type=renderer --user-data-dir="C:\Users\me\AppData\Roaming\Codex" --app-user-model-id=com.openai.codex"#,
+            ),
+        ]);
+
+        assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.codex_app_pids, vec![808, 809]);
+        assert_eq!(
+            state.codex_app_launch_path.as_deref(),
+            Some(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\Codex.exe"
+            )
+        );
+        assert_eq!(state.restartable_process_count(), 1);
+    }
+
+    #[test]
+    fn derives_windows_store_codex_app_id_from_launch_path() {
+        let app_id = super::codex_store_app_id_from_path(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\app\Codex.exe",
+        );
+
+        assert_eq!(app_id.as_deref(), Some("OpenAI.Codex_2p2nqsd0c76g0!App"));
     }
 
     #[test]
@@ -969,9 +1498,26 @@ mod tests {
     }
 
     #[test]
-    fn powershell_runtime_inspector_is_not_classified_as_cli() {
+    fn cursor_process_is_ignored() {
         let state = classify_processes(vec![record(
             707,
+            "Cursor.exe",
+            Some(r"C:\Users\me\AppData\Local\Programs\Cursor\Cursor.exe"),
+            r#""C:\Users\me\AppData\Local\Programs\Cursor\Cursor.exe" --type=renderer --vscode-window-config=vscode:cursor"#,
+        )]);
+
+        assert!(state.blocking_cli_pids.is_empty());
+        assert!(state.extension_pids.is_empty());
+        assert!(state.vscode_pids.is_empty());
+        assert!(state.antigravity_pids.is_empty());
+        assert!(state.codex_app_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 0);
+    }
+
+    #[test]
+    fn powershell_runtime_inspector_is_not_classified_as_cli() {
+        let state = classify_processes(vec![record(
+            808,
             "powershell.exe",
             Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
             r#""C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -in @('Code.exe','codex.exe','Codex.exe','node.exe') -or $_.CommandLine -match 'codex|@openai/codex|openai.chatgpt|vscode|Code.app|Codex.app') }""#,
@@ -980,6 +1526,7 @@ mod tests {
         assert!(state.blocking_cli_pids.is_empty());
         assert!(state.extension_pids.is_empty());
         assert!(state.vscode_pids.is_empty());
+        assert!(state.antigravity_pids.is_empty());
         assert!(state.codex_app_pids.is_empty());
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "codex-quota-monitor"
-version = "0.1.7"
+version = "0.1.9"
 description = "A desktop quota monitor and multi-account manager for Codex"
 authors = ["Coang2623"]
 edition = "2021"
