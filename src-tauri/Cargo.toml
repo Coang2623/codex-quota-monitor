@@ -1,6 +1,6 @@
 [package]
 name = "codex-quota-monitor"
-version = "0.1.9"
+version = "0.1.10"
 description = "A desktop quota monitor and multi-account manager for Codex"
 authors = ["Coang2623"]
 edition = "2021"
@@ -36,3 +36,5 @@ url = "2"
 flate2 = "1"
 chacha20poly1305 = "0.10"
 pbkdf2 = "0.12"
+tauri-plugin-updater = "2.10.0"
+tauri-plugin-process = "2.3.1"

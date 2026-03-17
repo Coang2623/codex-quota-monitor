@@ -18,8 +18,10 @@ pub(crate) struct RuntimeState {
     pub(crate) vscode_extension_pids: Vec<u32>,
     pub(crate) antigravity_extension_pids: Vec<u32>,
     pub(crate) vscode_pids: Vec<u32>,
+    pub(crate) vscode_window_count: usize,
     pub(crate) vscode_launch_path: Option<String>,
     pub(crate) antigravity_pids: Vec<u32>,
+    pub(crate) antigravity_window_count: usize,
     pub(crate) antigravity_launch_path: Option<String>,
     pub(crate) codex_app_pids: Vec<u32>,
     pub(crate) codex_app_launch_path: Option<String>,
@@ -173,6 +175,8 @@ pub(crate) fn relaunch_codex_app(executable_path: Option<&str>, existing_pids: &
 
 fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
     let mut state = RuntimeState::default();
+    let mut vscode_window_keys = HashSet::new();
+    let mut antigravity_window_keys = HashSet::new();
 
     for process in processes {
         if is_monitor_process(&process) || is_runtime_inspector_process(&process) {
@@ -196,6 +200,9 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
         if is_antigravity_process(&process) {
             state.antigravity_pids.push(process.pid);
+            if let Some(window_key) = extract_vscode_window_config(&process.command_line) {
+                antigravity_window_keys.insert(window_key);
+            }
             if state.antigravity_launch_path.is_none() {
                 state.antigravity_launch_path = process.launch_target();
             }
@@ -204,6 +211,9 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
         if is_vscode_process(&process) {
             state.vscode_pids.push(process.pid);
+            if let Some(window_key) = extract_vscode_window_config(&process.command_line) {
+                vscode_window_keys.insert(window_key);
+            }
             if state.vscode_launch_path.is_none() {
                 state.vscode_launch_path = process.launch_target().or(Some(String::from("code")));
             }
@@ -240,6 +250,9 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
     dedupe(&mut state.vscode_pids);
     dedupe(&mut state.antigravity_pids);
     dedupe(&mut state.codex_app_pids);
+    state.vscode_window_count = inferred_editor_window_count(&state.vscode_pids, &vscode_window_keys);
+    state.antigravity_window_count =
+        inferred_editor_window_count(&state.antigravity_pids, &antigravity_window_keys);
 
     state
 }
@@ -1280,6 +1293,31 @@ fn first_command_token(command_line: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn extract_vscode_window_config(command_line: &str) -> Option<String> {
+    const FLAG: &str = "--vscode-window-config=";
+
+    let start = command_line.find(FLAG)? + FLAG.len();
+    let value = &command_line[start..];
+    let value = value
+        .split_whitespace()
+        .next()
+        .map(|raw| raw.trim_matches('"').trim_matches('\''))?;
+
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(value.to_ascii_lowercase())
+}
+
+fn inferred_editor_window_count(editor_pids: &[u32], window_keys: &HashSet<String>) -> usize {
+    if !window_keys.is_empty() {
+        return window_keys.len();
+    }
+
+    usize::from(!editor_pids.is_empty())
+}
+
 fn file_name_lower(path: &str) -> Option<String> {
     Path::new(path)
         .file_name()
@@ -1364,6 +1402,7 @@ mod tests {
         )]);
 
         assert_eq!(state.vscode_pids, vec![303]);
+        assert_eq!(state.vscode_window_count, 1);
         assert_eq!(
             state.vscode_launch_path.as_deref(),
             Some(r"D:\Apps\Microsoft VS Code\Code.exe")
@@ -1381,6 +1420,7 @@ mod tests {
         )]);
 
         assert_eq!(state.antigravity_pids, vec![304]);
+        assert_eq!(state.antigravity_window_count, 1);
         assert_eq!(
             state.antigravity_launch_path.as_deref(),
             Some(r"D:\Apps\Antigravity\Antigravity.exe")
@@ -1482,6 +1522,7 @@ mod tests {
 
         assert_eq!(state.blocking_cli_pids, vec![505]);
         assert_eq!(state.vscode_pids, vec![506]);
+        assert_eq!(state.vscode_window_count, 1);
     }
 
     #[test]
@@ -1495,6 +1536,34 @@ mod tests {
 
         assert!(state.blocking_cli_pids.is_empty());
         assert_eq!(state.vscode_pids, vec![606]);
+        assert_eq!(state.vscode_window_count, 1);
+    }
+
+    #[test]
+    fn duplicate_vscode_renderers_for_one_window_count_once() {
+        let state = classify_processes(vec![
+            record(
+                901,
+                "Code.exe",
+                Some(r"D:\Apps\Microsoft VS Code\Code.exe"),
+                r#""D:\Apps\Microsoft VS Code\Code.exe" --type=renderer --vscode-window-config=vscode:shared-window"#,
+            ),
+            record(
+                902,
+                "Code.exe",
+                Some(r"D:\Apps\Microsoft VS Code\Code.exe"),
+                r#""D:\Apps\Microsoft VS Code\Code.exe" --type=renderer --vscode-window-config=vscode:shared-window"#,
+            ),
+            record(
+                903,
+                "Code.exe",
+                Some(r"D:\Apps\Microsoft VS Code\Code.exe"),
+                r#""D:\Apps\Microsoft VS Code\Code.exe""#,
+            ),
+        ]);
+
+        assert_eq!(state.vscode_pids, vec![901, 902, 903]);
+        assert_eq!(state.vscode_window_count, 1);
     }
 
     #[test]

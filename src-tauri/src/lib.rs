@@ -22,7 +22,11 @@ pub fn run() {
         .manage(app_logging::AppLogState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             app_logging::info(app.handle(), "app", "Codex Quota Monitor started");
             Ok(())
         })

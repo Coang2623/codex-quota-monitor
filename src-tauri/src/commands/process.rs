@@ -13,6 +13,16 @@ pub struct CodexProcessInfo {
     pub can_switch: bool,
     /// Process IDs of blocking standalone Codex CLI processes
     pub pids: Vec<u32>,
+    /// Number of VS Code windows currently open
+    pub vscode_window_count: usize,
+    /// Number of VS Code Codex extension workers currently running
+    pub vscode_extension_count: usize,
+    /// Number of Antigravity windows currently open
+    pub antigravity_window_count: usize,
+    /// Number of Antigravity Codex extension workers currently running
+    pub antigravity_extension_count: usize,
+    /// Number of Codex app processes currently running
+    pub codex_app_count: usize,
 }
 
 /// Check for running Codex processes
@@ -26,5 +36,10 @@ pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
         background_count: runtime_state.restartable_process_count(),
         can_switch: count == 0,
         pids: runtime_state.blocking_cli_pids,
+        vscode_window_count: runtime_state.vscode_window_count,
+        vscode_extension_count: runtime_state.vscode_extension_pids.len(),
+        antigravity_window_count: runtime_state.antigravity_window_count,
+        antigravity_extension_count: runtime_state.antigravity_extension_pids.len(),
+        codex_app_count: runtime_state.codex_app_pids.len(),
     })
 }
