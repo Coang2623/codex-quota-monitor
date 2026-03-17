@@ -216,22 +216,18 @@ pub async fn switch_account(
     let restarted_codex_app = closed_codex_apps > 0;
 
     if should_restart_vscode || closed_codex_apps > 0 {
-        let app_for_restart = app.clone();
-        let vscode_launch_path = runtime_state.vscode_launch_path.clone();
-        let codex_app_launch_path = runtime_state.codex_app_launch_path.clone();
-        let codex_app_pids = runtime_state.codex_app_pids.clone();
-        let should_restart_vscode_in_background = should_restart_vscode;
-        let closed_codex_apps_in_background = closed_codex_apps;
-        let vscode_shutdown_pids_for_restart = vscode_shutdown_pids.clone();
-
         crate::app_logging::info(
             &app,
             "switch",
             "Runtime restart was scheduled in the background so the UI can update immediately",
         );
 
-        std::thread::spawn(move || {
-            if should_restart_vscode_in_background {
+        if should_restart_vscode {
+            let app_for_vscode_restart = app.clone();
+            let vscode_launch_path = runtime_state.vscode_launch_path.clone();
+            let vscode_shutdown_pids_for_restart = vscode_shutdown_pids.clone();
+
+            std::thread::spawn(move || {
                 crate::runtime::wait_for_pids_to_exit(
                     &vscode_shutdown_pids_for_restart,
                     Duration::from_secs(5),
@@ -244,42 +240,85 @@ pub async fn switch_account(
 
                 if restarted {
                     crate::app_logging::info(
-                        &app_for_restart,
+                        &app_for_vscode_restart,
                         "switch",
                         format!("VS Code reopened using `{launch_target}`"),
                     );
                 } else {
                     crate::app_logging::warn(
-                        &app_for_restart,
+                        &app_for_vscode_restart,
                         "switch",
                         format!("VS Code reopen failed for `{launch_target}`"),
                     );
                 }
-            }
+            });
+        }
 
-            if closed_codex_apps_in_background > 0 {
-                crate::runtime::wait_for_pids_to_exit(&codex_app_pids, Duration::from_secs(3));
+        if closed_codex_apps > 0 {
+            let app_for_codex_restart = app.clone();
+            let codex_app_launch_path = runtime_state.codex_app_launch_path.clone();
+            let codex_app_pids = runtime_state.codex_app_pids.clone();
+
+            std::thread::spawn(move || {
+                crate::runtime::wait_for_pids_to_exit(&codex_app_pids, Duration::from_secs(8));
+                let lingering_codex_app_pids =
+                    crate::runtime::current_codex_app_pids().unwrap_or_default();
+
+                if !lingering_codex_app_pids.is_empty() {
+                    let additionally_closed =
+                        crate::runtime::terminate_pids(&lingering_codex_app_pids);
+                    crate::app_logging::warn(
+                        &app_for_codex_restart,
+                        "switch",
+                        format!(
+                            "Codex app still had {} lingering process(es); forced shutdown closed {} more",
+                            lingering_codex_app_pids.len(),
+                            additionally_closed
+                        ),
+                    );
+                    crate::runtime::wait_for_pids_to_exit(
+                        &lingering_codex_app_pids,
+                        Duration::from_secs(4),
+                    );
+                }
+
+                let remaining_codex_app_pids =
+                    crate::runtime::current_codex_app_pids().unwrap_or_default();
+                if !remaining_codex_app_pids.is_empty() {
+                    crate::app_logging::warn(
+                        &app_for_codex_restart,
+                        "switch",
+                        format!(
+                            "Codex app still reports {} running process(es) before relaunch; waiting for the runtime lock to clear",
+                            remaining_codex_app_pids.len()
+                        ),
+                    );
+                }
+
+                std::thread::sleep(Duration::from_millis(1500));
                 let launch_target = codex_app_launch_path
                     .as_deref()
                     .unwrap_or("(missing path)");
-                let restarted =
-                    crate::runtime::relaunch_codex_app(codex_app_launch_path.as_deref());
+                let restarted = crate::runtime::relaunch_codex_app(
+                    codex_app_launch_path.as_deref(),
+                    &remaining_codex_app_pids,
+                );
 
                 if restarted {
                     crate::app_logging::info(
-                        &app_for_restart,
+                        &app_for_codex_restart,
                         "switch",
                         format!("Codex app reopened using `{launch_target}`"),
                     );
                 } else {
                     crate::app_logging::warn(
-                        &app_for_restart,
+                        &app_for_codex_restart,
                         "switch",
                         format!("Codex app reopen failed for `{launch_target}`"),
                     );
                 }
-            }
-        });
+            });
+        }
     }
 
     Ok(SwitchAccountResult {

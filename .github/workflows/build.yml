@@ -3,11 +3,11 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.0.0)'
+        description: "Version tag (e.g., v1.0.0)"
         required: true
         type: string
 
@@ -84,30 +84,37 @@ jobs:
           releaseBody: |
             ## Codex Quota Monitor
 
-            Bản release này hoàn tất rebrand từ Codex Switcher sang **Codex Quota Monitor** và đóng gói lại ứng dụng desktop theo nhận diện mới.
+            Bản release này hoàn thiện bộ nhận diện **Codex Quota Monitor** và ổn định lại flow switch account cho các runtime Codex trên desktop.
 
             ### Tính năng chính
 
             - Theo dõi quota Codex theo cả chu kỳ **5 giờ** và **7 ngày** trên từng tài khoản.
             - Quản lý nhiều tài khoản Codex trong một ứng dụng desktop duy nhất.
-            - **Switch & Restart**: đổi tài khoản và khởi động lại runtime liên quan để áp dụng nhanh hơn.
+            - **Switch & Restart** để đổi tài khoản và khởi động lại runtime liên quan nhanh hơn.
             - Hỗ trợ các runtime chính: **VS Code + Codex extension**, **Codex app**, và nhận diện **Codex CLI** standalone.
             - Tự chặn switch nếu phát hiện **CLI standalone** đang chạy để tránh làm hỏng session đang dùng.
             - Hỗ trợ đăng nhập qua **OAuth** và import từ **auth.json**.
-            - Hỗ trợ **refresh usage**, **warm-up request**, sắp xếp tài khoản và theo dõi trạng thái từng account.
+            - Có thể **refresh usage**, gửi **warm-up request**, sắp xếp tài khoản và theo dõi trạng thái từng account.
             - Có **runtime log panel** trong ứng dụng để xem log thao tác switch, refresh và restart.
+
+            ### Cải thiện trong bản này
+
+            - Sửa nhận diện runtime để phân biệt đúng giữa **Codex CLI**, **VS Code**, **Codex extension**, **Codex app** và không tính nhầm **Cursor**.
+            - Cải thiện flow restart để VS Code và Codex app được relaunch ổn định hơn sau khi switch account.
+            - Giảm log đếm runtime sai lệch bằng cách hiển thị theo nhóm runtime thay vì cộng dồn từng process con.
+            - Giữ UI ổn định hơn sau switch, hạn chế trạng thái kẹt ở `Switching...`.
 
             ### Backup và tương thích dữ liệu
 
-            - Export/import nhanh bằng định dạng slim mới của Codex Quota Monitor.
+            - Export/import nhanh bằng định dạng slim của Codex Quota Monitor.
             - Backup đầy đủ có mã hóa để sao lưu toàn bộ store tài khoản.
-            - Tự động migrate dữ liệu cũ từ thư mục `~/.codex-switcher` sang `~/.codex-quota-monitor`.
-            - Vẫn đọc được backup legacy từ bản cũ để người dùng nâng cấp mà không mất dữ liệu.
+            - Tự động migrate dữ liệu cũ từ `~/.codex-switcher` sang `~/.codex-quota-monitor`.
+            - Vẫn đọc được backup legacy từ bản cũ để nâng cấp mà không mất dữ liệu.
 
-            ### Thay đổi nhận diện
+            ### Nhận diện thương hiệu mới
 
-            - Tên ứng dụng, icon, package name, bundle metadata và release asset đã đổi sang **Codex Quota Monitor**.
-            - Binary và installer của bản phát hành mới dùng nhận diện mới thay vì thương hiệu cũ.
+            - Tên ứng dụng, icon, package name, bundle metadata và release asset đều đã đổi sang **Codex Quota Monitor**.
+            - Binary và installer của bản phát hành mới dùng hoàn toàn bộ nhận diện mới thay cho thương hiệu cũ.
 
             ### Gói phát hành
 
