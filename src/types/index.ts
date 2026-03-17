@@ -43,6 +43,11 @@ export interface CodexProcessInfo {
   background_count: number;
   can_switch: boolean;
   pids: number[];
+  vscode_window_count: number;
+  vscode_extension_count: number;
+  antigravity_window_count: number;
+  antigravity_extension_count: number;
+  codex_app_count: number;
 }
 
 export type AppLogLevel = "info" | "success" | "warn" | "error";
@@ -76,4 +81,32 @@ export interface SwitchAccountResult {
   restarted_antigravity: boolean;
   closed_codex_apps: number;
   restarted_codex_app: boolean;
+}
+
+export type AppUpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "up_to_date"
+  | "downloading"
+  | "installing"
+  | "relaunching"
+  | "error";
+export type AppUpdateCheckSource = "auto" | "manual" | null;
+
+export interface AppUpdateInfo {
+  status: AppUpdateStatus;
+  current_version: string | null;
+  latest_version: string | null;
+  release_name: string | null;
+  release_url: string | null;
+  published_at: string | null;
+  body: string | null;
+  error: string | null;
+  checked_at: number | null;
+  source: AppUpdateCheckSource;
+  can_download_and_install: boolean;
+  downloaded_bytes: number;
+  content_length: number | null;
+  download_percent: number | null;
 }

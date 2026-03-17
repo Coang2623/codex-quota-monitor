@@ -2,9 +2,16 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAccounts } from "./hooks/useAccounts";
+import { useAppUpdate } from "./hooks/useAppUpdate";
 import { AccountCard, AddAccountModal, LogPanel } from "./components";
-import type { AppLogEntry, AppLogLevel, CodexProcessInfo, SwitchAccountResult } from "./types";
+import type {
+  AppLogEntry,
+  AppLogLevel,
+  CodexProcessInfo,
+  SwitchAccountResult,
+} from "./types";
 import "./App.css";
 
 const MAX_LOG_ENTRIES = 250;
@@ -36,6 +43,24 @@ function appendLogEntry(entries: AppLogEntry[], entry: AppLogEntry): AppLogEntry
   return next.length > MAX_LOG_ENTRIES ? next.slice(next.length - MAX_LOG_ENTRIES) : next;
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatRelativeReleaseDate(value: string | null): string | null {
+  if (!value) return null;
+  const publishedAt = new Date(value);
+  if (Number.isNaN(publishedAt.getTime())) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(publishedAt);
+}
+
 function App() {
   const {
     accounts,
@@ -57,6 +82,8 @@ function App() {
     completeOAuthLogin,
     cancelOAuthLogin,
   } = useAccounts();
+  const { updateInfo, isCheckingForUpdates, isInstallingUpdate, checkForUpdates, installUpdate } =
+    useAppUpdate();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -87,9 +114,12 @@ function App() {
   >("deadline_asc");
   const [logEntries, setLogEntries] = useState<AppLogEntry[]>([]);
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const processSnapshotRef = useRef<string | null>(null);
   const switchResetTimerRef = useRef<number | null>(null);
+  const updateSnapshotRef = useRef<string | null>(null);
+  const updateLifecycleRef = useRef<string | null>(null);
 
   const appendLog = useCallback(
     (scope: string, message: string, level: AppLogLevel = "info") => {
@@ -139,6 +169,82 @@ function App() {
       appendLog("runtime", `Process check failed: ${formatWarmupError(err)}`, "error");
     }
   }, [appendLog]);
+
+  useEffect(() => {
+    if (!updateInfo.checked_at) return;
+
+    const snapshot = [
+      updateInfo.status,
+      updateInfo.current_version,
+      updateInfo.latest_version,
+      updateInfo.error,
+      updateInfo.source,
+      updateInfo.checked_at,
+    ].join(":");
+
+    if (updateSnapshotRef.current === snapshot) {
+      return;
+    }
+    updateSnapshotRef.current = snapshot;
+
+    if (updateInfo.status === "available") {
+      appendLog(
+        "update",
+        updateInfo.can_download_and_install
+          ? `Update available: v${updateInfo.current_version} -> v${updateInfo.latest_version}`
+          : `Release available: v${updateInfo.current_version} -> v${updateInfo.latest_version} (manual install fallback)`,
+        updateInfo.can_download_and_install ? "warn" : "info"
+      );
+      return;
+    }
+
+    if (updateInfo.status === "up_to_date") {
+      appendLog(
+        "update",
+        `App is up to date at v${updateInfo.current_version}`,
+        "success"
+      );
+      if (updateInfo.source === "manual") {
+        showWarmupToast(`Already using the latest version (v${updateInfo.current_version}).`);
+      }
+      return;
+    }
+
+    if (updateInfo.status === "error") {
+      appendLog(
+        "update",
+        `Update check failed: ${updateInfo.error ?? "Unknown error"}`,
+        "error"
+      );
+      if (updateInfo.source === "manual") {
+        showWarmupToast(
+          `Update check failed: ${updateInfo.error ?? "Unknown error"}`,
+          true
+        );
+      }
+    }
+  }, [appendLog, updateInfo]);
+
+  useEffect(() => {
+    if (updateLifecycleRef.current === updateInfo.status) {
+      return;
+    }
+    updateLifecycleRef.current = updateInfo.status;
+
+    if (updateInfo.status === "downloading") {
+      appendLog("update", "Downloading update package", "info");
+      return;
+    }
+
+    if (updateInfo.status === "installing") {
+      appendLog("update", "Installing update package", "warn");
+      return;
+    }
+
+    if (updateInfo.status === "relaunching") {
+      appendLog("update", "Update installed. Restarting application", "success");
+    }
+  }, [appendLog, updateInfo.status]);
 
   const handleClearLogs = useCallback(async () => {
     try {
@@ -198,7 +304,16 @@ function App() {
   useEffect(() => {
     if (!processInfo) return;
 
-    const snapshot = `${processInfo.count}:${processInfo.background_count}:${processInfo.can_switch}`;
+    const snapshot = [
+      processInfo.count,
+      processInfo.background_count,
+      processInfo.can_switch,
+      processInfo.vscode_window_count,
+      processInfo.vscode_extension_count,
+      processInfo.antigravity_window_count,
+      processInfo.antigravity_extension_count,
+      processInfo.codex_app_count,
+    ].join(":");
     if (processSnapshotRef.current === snapshot) {
       return;
     }
@@ -214,9 +329,14 @@ function App() {
     }
 
     if (processInfo.background_count > 0) {
+      const activeSessions = [
+        processInfo.vscode_extension_count > 0 ? "VS Code" : null,
+        processInfo.antigravity_extension_count > 0 ? "Antigravity" : null,
+        processInfo.codex_app_count > 0 ? "Codex app" : null,
+      ].filter(Boolean);
       appendLog(
         "runtime",
-        `Detected ${processInfo.background_count} restartable runtime(s) with switching allowed`,
+        `Detected active session(s): ${activeSessions.join(", ")}`,
         "info"
       );
       return;
@@ -548,12 +668,150 @@ function App() {
     }
   };
 
+  const handleCheckForUpdates = async () => {
+    try {
+      await checkForUpdates("manual");
+    } catch {
+      // The hook already stores and reports the error state.
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    try {
+      appendLog("update", "User approved update download and install", "warn");
+      await installUpdate();
+    } catch (err) {
+      appendLog("update", `Install failed: ${formatWarmupError(err)}`, "error");
+      showWarmupToast(`Update install failed: ${formatWarmupError(err)}`, true);
+    }
+  };
+
+  const handleOpenReleasePage = async () => {
+    if (!updateInfo.release_url) return;
+
+    try {
+      await openUrl(updateInfo.release_url);
+      appendLog("update", `Opened release page ${updateInfo.release_url}`, "info");
+    } catch (err) {
+      appendLog("update", `Failed to open release page: ${formatWarmupError(err)}`, "error");
+      showWarmupToast("Failed to open release page", true);
+    }
+  };
+
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const blockingProcessCount = processInfo?.count ?? 0;
   const restartableRuntimeCount = processInfo?.background_count ?? 0;
   const hasBlockingProcesses = blockingProcessCount > 0;
   const hasRestartableRuntimes = restartableRuntimeCount > 0;
+  const activeSessionCards = processInfo
+    ? [
+        {
+          key: "cli",
+          label: "Standalone CLI",
+          status: hasBlockingProcesses ? "Blocking" : "Clear",
+          detail: hasBlockingProcesses
+            ? `${pluralize(blockingProcessCount, "process")} still running`
+            : "No standalone CLI detected",
+          tone: hasBlockingProcesses ? "amber" : "slate",
+        },
+        {
+          key: "vscode",
+          label: "VS Code",
+          status:
+            processInfo.vscode_extension_count > 0
+              ? "Active"
+              : processInfo.vscode_window_count > 0
+                ? "Open"
+                : "Closed",
+          detail:
+            processInfo.vscode_extension_count > 0
+              ? `${pluralize(processInfo.vscode_window_count, "window")} • ${pluralize(processInfo.vscode_extension_count, "Codex worker")}`
+              : processInfo.vscode_window_count > 0
+                ? `${pluralize(processInfo.vscode_window_count, "window")} open • no Codex worker`
+                : "No VS Code session",
+          tone:
+            processInfo.vscode_extension_count > 0
+              ? "blue"
+              : processInfo.vscode_window_count > 0
+                ? "slate"
+                : "slate",
+        },
+        {
+          key: "antigravity",
+          label: "Antigravity",
+          status:
+            processInfo.antigravity_extension_count > 0
+              ? "Active"
+              : processInfo.antigravity_window_count > 0
+                ? "Open"
+                : "Closed",
+          detail:
+            processInfo.antigravity_extension_count > 0
+              ? `${pluralize(processInfo.antigravity_window_count, "window")} • ${pluralize(processInfo.antigravity_extension_count, "Codex worker")}`
+              : processInfo.antigravity_window_count > 0
+                ? `${pluralize(processInfo.antigravity_window_count, "window")} open • no Codex worker`
+                : "No Antigravity session",
+          tone:
+            processInfo.antigravity_extension_count > 0
+              ? "blue"
+              : processInfo.antigravity_window_count > 0
+                ? "slate"
+                : "slate",
+        },
+        {
+          key: "codex-app",
+          label: "Codex app",
+          status: processInfo.codex_app_count > 0 ? "Active" : "Closed",
+          detail:
+            processInfo.codex_app_count > 0
+              ? `${pluralize(processInfo.codex_app_count, "process")} running`
+              : "Codex app is closed",
+          tone: processInfo.codex_app_count > 0 ? "blue" : "slate",
+        },
+      ]
+    : [];
+  const activeSessionKindCount = activeSessionCards.filter(
+    (card) => card.status === "Active" || card.status === "Blocking"
+  ).length;
+  const activeSessionSummary = hasBlockingProcesses
+    ? `${pluralize(blockingProcessCount, "CLI process")} blocking switching`
+    : hasRestartableRuntimes
+      ? `${pluralize(activeSessionKindCount, "active session")} detected`
+      : "No active Codex session detected";
+  const showUpdateCard =
+    ["available", "downloading", "installing", "relaunching"].includes(updateInfo.status) &&
+    updateInfo.latest_version !== null &&
+    updateInfo.latest_version !== dismissedUpdateVersion;
+  const publishedUpdateDate = formatRelativeReleaseDate(updateInfo.published_at);
+  const updateSummary = (() => {
+    if (updateInfo.status === "available") {
+      return updateInfo.can_download_and_install
+        ? `Version ${updateInfo.latest_version} is ready to download and install.`
+        : `Version ${updateInfo.latest_version} is available, but this build needs manual install.`;
+    }
+    if (updateInfo.status === "checking") {
+      return "Checking GitHub releases for a new production build.";
+    }
+    if (updateInfo.status === "downloading") {
+      return updateInfo.download_percent !== null
+        ? `Downloading update package: ${updateInfo.download_percent}%`
+        : "Downloading update package.";
+    }
+    if (updateInfo.status === "installing") {
+      return "Installing the downloaded update package.";
+    }
+    if (updateInfo.status === "relaunching") {
+      return "Update installed. Restarting the app.";
+    }
+    if (updateInfo.status === "up_to_date") {
+      return `You are already on the latest version (${updateInfo.current_version}).`;
+    }
+    if (updateInfo.status === "error") {
+      return "Unable to verify the latest GitHub release right now.";
+    }
+    return "Update checks run automatically when the app starts.";
+  })();
 
   const sortedOtherAccounts = useMemo(() => {
     const getResetDeadline = (resetAt: number | null | undefined) =>
@@ -610,39 +868,9 @@ function App() {
                 QM
               </div>
               <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-xl font-bold text-gray-900 tracking-tight">
-                    Codex Quota Monitor
-                  </h1>
-                  {processInfo && (
-                    <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${
-                        hasBlockingProcesses
-                          ? "bg-amber-50 text-amber-700 border-amber-200"
-                          : hasRestartableRuntimes
-                            ? "bg-blue-50 text-blue-700 border-blue-200"
-                            : "bg-green-50 text-green-700 border-green-200"
-                      }`}
-                    >
-                      <span
-                        className={`inline-block w-1.5 h-1.5 rounded-full ${
-                          hasBlockingProcesses
-                            ? "bg-amber-500"
-                            : hasRestartableRuntimes
-                              ? "bg-blue-500"
-                              : "bg-green-500"
-                        }`}
-                      ></span>
-                      <span>
-                        {hasBlockingProcesses
-                          ? `${blockingProcessCount} CLI blocking`
-                          : hasRestartableRuntimes
-                            ? "Editor/Codex open"
-                            : "No Codex runtime"}
-                      </span>
-                    </span>
-                  )}
-                </div>
+                <h1 className="text-xl font-bold text-gray-900 tracking-tight">
+                  Codex Quota Monitor
+                </h1>
                 <p className="text-xs text-gray-500">
                   Quota monitoring and multi-account control for Codex
                 </p>
@@ -719,6 +947,16 @@ function App() {
                     <button
                       onClick={() => {
                         setIsActionsMenuOpen(false);
+                        void handleCheckForUpdates();
+                      }}
+                      disabled={isCheckingForUpdates}
+                      className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700 disabled:opacity-50"
+                    >
+                      {isCheckingForUpdates ? "Checking updates..." : "Check for Updates"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
                         void handleExportSlimText();
                       }}
                       disabled={isExportingSlim}
@@ -766,6 +1004,232 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-6 py-8">
+        <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                App Update
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-gray-900">{updateSummary}</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Auto-check runs on startup against the latest stable GitHub release.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 self-start">
+              <span
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
+                  updateInfo.status === "available" ||
+                  updateInfo.status === "downloading" ||
+                  updateInfo.status === "installing" ||
+                  updateInfo.status === "relaunching"
+                    ? "border-blue-200 bg-blue-50 text-blue-700"
+                    : updateInfo.status === "error"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : updateInfo.status === "up_to_date"
+                        ? "border-green-200 bg-green-50 text-green-700"
+                        : "border-gray-200 bg-gray-50 text-gray-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${
+                    updateInfo.status === "available" ||
+                    updateInfo.status === "downloading" ||
+                    updateInfo.status === "installing" ||
+                    updateInfo.status === "relaunching"
+                      ? "bg-blue-500"
+                      : updateInfo.status === "error"
+                        ? "bg-red-500"
+                        : updateInfo.status === "up_to_date"
+                          ? "bg-green-500"
+                          : "bg-gray-400"
+                  }`}
+                ></span>
+                {updateInfo.status === "available"
+                  ? "Update available"
+                  : updateInfo.status === "downloading"
+                    ? "Downloading"
+                    : updateInfo.status === "installing"
+                      ? "Installing"
+                      : updateInfo.status === "relaunching"
+                        ? "Restarting"
+                  : updateInfo.status === "error"
+                    ? "Check failed"
+                    : updateInfo.status === "up_to_date"
+                      ? "Up to date"
+                      : updateInfo.status === "checking"
+                        ? "Checking"
+                        : "Idle"}
+              </span>
+              <button
+                onClick={() => void handleCheckForUpdates()}
+                disabled={isCheckingForUpdates || isInstallingUpdate}
+                className="h-9 px-3 py-2 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors disabled:opacity-50"
+              >
+                {isCheckingForUpdates ? "Checking..." : "Check now"}
+              </button>
+            </div>
+          </div>
+
+          {showUpdateCard && (
+            <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/70 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-blue-900">
+                    v{updateInfo.latest_version} is available
+                  </p>
+                  <p className="mt-1 text-sm text-blue-800">
+                    Current version: v{updateInfo.current_version}
+                    {publishedUpdateDate ? ` • Published ${publishedUpdateDate}` : ""}
+                  </p>
+                  {updateInfo.release_name && (
+                    <p className="mt-1 text-xs uppercase tracking-[0.14em] text-blue-700/80">
+                      {updateInfo.release_name}
+                    </p>
+                  )}
+                  {updateInfo.error && (
+                    <p className="mt-2 text-sm text-blue-800">{updateInfo.error}</p>
+                  )}
+                  {updateInfo.body && (
+                    <p className="mt-2 line-clamp-3 text-sm text-blue-800/90 whitespace-pre-line">
+                      {updateInfo.body}
+                    </p>
+                  )}
+                  {updateInfo.status === "downloading" && (
+                    <div className="mt-3">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-blue-100">
+                        <div
+                          className="h-full rounded-full bg-blue-600 transition-[width]"
+                          style={{
+                            width: `${updateInfo.download_percent ?? 15}%`,
+                          }}
+                        ></div>
+                      </div>
+                      <p className="mt-2 text-xs text-blue-800">
+                        {updateInfo.download_percent !== null
+                          ? `Downloaded ${updateInfo.download_percent}%`
+                          : "Downloading updater package"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {updateInfo.can_download_and_install ? (
+                    <button
+                      onClick={() => void handleInstallUpdate()}
+                      disabled={isInstallingUpdate}
+                      className="px-3 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-50"
+                    >
+                      {updateInfo.status === "downloading"
+                        ? "Downloading..."
+                        : updateInfo.status === "installing"
+                          ? "Installing..."
+                          : updateInfo.status === "relaunching"
+                            ? "Restarting..."
+                            : "Download & Install"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void handleOpenReleasePage()}
+                      className="px-3 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                    >
+                      Open release page
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void handleOpenReleasePage()}
+                    className="px-3 py-2 text-sm font-medium rounded-lg bg-white hover:bg-blue-100 text-blue-700 border border-blue-200 transition-colors"
+                  >
+                    View release
+                  </button>
+                  <button
+                    onClick={() => setDismissedUpdateVersion(updateInfo.latest_version)}
+                    className="px-3 py-2 text-sm font-medium rounded-lg bg-white hover:bg-blue-100 text-blue-700 border border-blue-200 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {updateInfo.status === "error" && updateInfo.error && updateInfo.source === "manual" && (
+            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {updateInfo.error}
+            </div>
+          )}
+        </section>
+
+        {processInfo && (
+          <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                  Active Session
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-gray-900">{activeSessionSummary}</h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  Runtime detail for safe switching and restart decisions.
+                </p>
+              </div>
+              <span
+                className={`inline-flex items-center gap-2 self-start rounded-full border px-3 py-1 text-xs font-medium ${
+                  hasBlockingProcesses
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : hasRestartableRuntimes
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-green-200 bg-green-50 text-green-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${
+                    hasBlockingProcesses
+                      ? "bg-amber-500"
+                      : hasRestartableRuntimes
+                        ? "bg-blue-500"
+                        : "bg-green-500"
+                  }`}
+                ></span>
+                {hasBlockingProcesses
+                  ? "Switch blocked"
+                  : hasRestartableRuntimes
+                    ? "Switch allowed"
+                    : "Idle"}
+              </span>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {activeSessionCards.map((card) => (
+                <div
+                  key={card.key}
+                  className={`rounded-xl border p-4 ${
+                    card.tone === "amber"
+                      ? "border-amber-200 bg-amber-50/60"
+                      : card.tone === "blue"
+                        ? "border-blue-200 bg-blue-50/60"
+                        : "border-gray-200 bg-gray-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-gray-900">{card.label}</p>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        card.tone === "amber"
+                          ? "bg-amber-100 text-amber-700"
+                          : card.tone === "blue"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-white text-gray-600"
+                      }`}
+                    >
+                      {card.status}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-gray-600">{card.detail}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {loading && accounts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="animate-spin h-10 w-10 border-2 border-gray-900 border-t-transparent rounded-full mb-4"></div>
