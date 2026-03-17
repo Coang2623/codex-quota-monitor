@@ -38,12 +38,7 @@ jobs:
         id: tag
         shell: bash
         run: |
-          TAG="v$(python - <<'PY'
-import json
-with open('package.json', encoding='utf-8') as f:
-    print(json.load(f)['version'])
-PY
-          )"
+          TAG="v$(python -c 'import json; print(json.load(open("package.json", encoding="utf-8"))["version"])')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Check if release tag already exists
@@ -90,27 +85,9 @@ PY
         if: steps.release_guard.outputs.should_release == 'true'
         shell: bash
         run: |
-          PACKAGE_VERSION=$(python - <<'PY'
-import json
-with open('package.json', encoding='utf-8') as f:
-    print(json.load(f)['version'])
-PY
-          )
-          TAURI_VERSION=$(python - <<'PY'
-import json
-with open('src-tauri/tauri.conf.json', encoding='utf-8') as f:
-    print(json.load(f)['version'])
-PY
-          )
-          CARGO_VERSION=$(python - <<'PY'
-from pathlib import Path
-
-for line in Path('src-tauri/Cargo.toml').read_text(encoding='utf-8').splitlines():
-    if line.startswith('version = '):
-        print(line.split('"')[1])
-        break
-PY
-          )
+          PACKAGE_VERSION=$(python -c 'import json; print(json.load(open("package.json", encoding="utf-8"))["version"])')
+          TAURI_VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json", encoding="utf-8"))["version"])')
+          CARGO_VERSION=$(grep -m1 '^version = ' src-tauri/Cargo.toml | cut -d '"' -f 2)
 
           if [ "$PACKAGE_VERSION" != "$TAURI_VERSION" ] || [ "$PACKAGE_VERSION" != "$CARGO_VERSION" ]; then
             echo "Version mismatch detected:"
