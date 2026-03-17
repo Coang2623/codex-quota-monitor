@@ -15,16 +15,20 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub(crate) struct RuntimeState {
     pub(crate) blocking_cli_pids: Vec<u32>,
     pub(crate) extension_pids: Vec<u32>,
+    pub(crate) vscode_extension_pids: Vec<u32>,
+    pub(crate) antigravity_extension_pids: Vec<u32>,
     pub(crate) vscode_pids: Vec<u32>,
     pub(crate) vscode_launch_path: Option<String>,
+    pub(crate) antigravity_pids: Vec<u32>,
+    pub(crate) antigravity_launch_path: Option<String>,
     pub(crate) codex_app_pids: Vec<u32>,
     pub(crate) codex_app_launch_path: Option<String>,
 }
 
 impl RuntimeState {
     pub(crate) fn restartable_process_count(&self) -> usize {
-        usize::from(!self.extension_pids.is_empty())
-            + usize::from(!self.vscode_pids.is_empty())
+        usize::from(!self.vscode_extension_pids.is_empty())
+            + usize::from(!self.antigravity_extension_pids.is_empty())
             + usize::from(!self.codex_app_pids.is_empty())
     }
 }
@@ -131,6 +135,24 @@ pub(crate) fn relaunch_vscode(executable_path: Option<&str>, existing_pids: &[u3
     }
 }
 
+pub(crate) fn relaunch_antigravity(executable_path: Option<&str>, existing_pids: &[u32]) -> bool {
+    #[cfg(windows)]
+    {
+        let executable_candidates = antigravity_launch_candidates(executable_path);
+        let cli_candidates = antigravity_cli_candidates(executable_path);
+        return relaunch_antigravity_with_retries(
+            &executable_candidates,
+            &cli_candidates,
+            existing_pids,
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        executable_path.is_some_and(|path| launch_detached(path, &[]))
+    }
+}
+
 pub(crate) fn relaunch_codex_app(executable_path: Option<&str>, existing_pids: &[u32]) -> bool {
     #[cfg(windows)]
     {
@@ -163,6 +185,20 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
         if is_extension_runtime(&process) {
             state.extension_pids.push(process.pid);
+            if is_vscode_extension_runtime(&process) {
+                state.vscode_extension_pids.push(process.pid);
+            }
+            if is_antigravity_extension_runtime(&process) {
+                state.antigravity_extension_pids.push(process.pid);
+            }
+            continue;
+        }
+
+        if is_antigravity_process(&process) {
+            state.antigravity_pids.push(process.pid);
+            if state.antigravity_launch_path.is_none() {
+                state.antigravity_launch_path = process.launch_target();
+            }
             continue;
         }
 
@@ -199,7 +235,10 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
 
     dedupe(&mut state.blocking_cli_pids);
     dedupe(&mut state.extension_pids);
+    dedupe(&mut state.vscode_extension_pids);
+    dedupe(&mut state.antigravity_extension_pids);
     dedupe(&mut state.vscode_pids);
+    dedupe(&mut state.antigravity_pids);
     dedupe(&mut state.codex_app_pids);
 
     state
@@ -224,7 +263,7 @@ fn list_processes() -> anyhow::Result<Vec<ProcessRecord>> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -in @('Code.exe','codex.exe','Codex.exe','node.exe') -or $_.CommandLine -match 'codex|@openai/codex|openai.chatgpt|vscode|Code.app|Codex.app') } | ForEach-Object { \"$($_.ProcessId)`t$($_.Name)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }",
+                "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -in @('Code.exe','Antigravity.exe','codex.exe','Codex.exe','node.exe') -or $_.CommandLine -match 'codex|@openai/codex|openai.chatgpt|antigravity|vscode|Code.app|Codex.app') } | ForEach-Object { \"$($_.ProcessId)`t$($_.Name)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }",
             ])
             .output()
             .context("Failed to inspect running processes via PowerShell")?;
@@ -333,6 +372,20 @@ fn is_extension_runtime(process: &ProcessRecord) -> bool {
     inside_editor_extension && (haystack.contains("app-server") || looks_like_codex_binary(process))
 }
 
+fn is_vscode_extension_runtime(process: &ProcessRecord) -> bool {
+    if !is_extension_runtime(process) {
+        return false;
+    }
+
+    let haystack = process.combined_haystack();
+    (haystack.contains(".vscode") || haystack.contains("vscode-server"))
+        && !haystack.contains(".antigravity")
+}
+
+fn is_antigravity_extension_runtime(process: &ProcessRecord) -> bool {
+    is_extension_runtime(process) && process.combined_haystack().contains(".antigravity")
+}
+
 fn is_cursor_process(process: &ProcessRecord) -> bool {
     let name = process.name.to_ascii_lowercase();
     let haystack = process.combined_haystack();
@@ -350,8 +403,25 @@ fn is_cursor_process(process: &ProcessRecord) -> bool {
             && (haystack.contains("--vscode-window-config=") || haystack.contains("--user-data-dir="))
 }
 
+fn is_antigravity_process(process: &ProcessRecord) -> bool {
+    let name = process.name.to_ascii_lowercase();
+    let haystack = process.combined_haystack();
+    let launch_target = process.launch_target_lower().unwrap_or_default();
+
+    name == "antigravity"
+        || name == "antigravity.exe"
+        || file_name_lower(&launch_target).as_deref() == Some("antigravity")
+        || file_name_lower(&launch_target).as_deref() == Some("antigravity.exe")
+        || haystack.contains("\\antigravity\\")
+        || haystack.contains("/antigravity.app/")
+        || haystack.contains("appdata\\local\\programs\\antigravity")
+        || haystack.contains("appdata\\roaming\\antigravity")
+        || haystack.contains("--app-user-model-id=google.antigravity")
+        || haystack.contains("--app-path=") && haystack.contains("antigravity")
+}
+
 fn is_vscode_process(process: &ProcessRecord) -> bool {
-    if is_cursor_process(process) {
+    if is_cursor_process(process) || is_antigravity_process(process) {
         return false;
     }
 
@@ -572,7 +642,7 @@ fn relaunch_vscode_with_retries(
     let mut dispatched_launch = false;
 
     for candidate in cli_candidates {
-        if !run_vscode_cli(candidate, &[]) {
+        if !run_cli_command(candidate, &[]) {
             continue;
         }
 
@@ -597,6 +667,39 @@ fn relaunch_vscode_with_retries(
 }
 
 #[cfg(windows)]
+fn relaunch_antigravity_with_retries(
+    executable_candidates: &[String],
+    cli_candidates: &[String],
+    existing_pids: &[u32],
+) -> bool {
+    let mut dispatched_launch = false;
+
+    for candidate in cli_candidates {
+        if !run_cli_command(candidate, &[]) {
+            continue;
+        }
+
+        dispatched_launch = true;
+        if confirm_antigravity_relaunch(existing_pids) {
+            return true;
+        }
+    }
+
+    for candidate in executable_candidates {
+        if !launch_detached(candidate, &[]) {
+            continue;
+        }
+
+        dispatched_launch = true;
+        if confirm_antigravity_relaunch(existing_pids) {
+            return true;
+        }
+    }
+
+    dispatched_launch
+}
+
+#[cfg(windows)]
 fn confirm_vscode_relaunch(existing_pids: &[u32]) -> bool {
     if wait_for_new_matching_process(
         is_vscode_process,
@@ -610,6 +713,27 @@ fn confirm_vscode_relaunch(existing_pids: &[u32]) -> bool {
 
     list_processes()
         .map(|processes| processes.into_iter().any(|process| is_vscode_process(&process)))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn confirm_antigravity_relaunch(existing_pids: &[u32]) -> bool {
+    if wait_for_new_matching_process(
+        is_antigravity_process,
+        existing_pids,
+        Duration::from_millis(2000),
+    ) {
+        return true;
+    }
+
+    sleep(Duration::from_millis(500));
+
+    list_processes()
+        .map(|processes| {
+            processes
+                .into_iter()
+                .any(|process| is_antigravity_process(&process))
+        })
         .unwrap_or(false)
 }
 
@@ -755,7 +879,7 @@ fn dispatch_vscode_command_uri(executable_path: Option<&str>, uri: &str) -> bool
     let cli_candidates = vscode_cli_candidates(executable_path);
 
     for candidate in &cli_candidates {
-        if run_vscode_cli(candidate, &["--open-url", uri]) {
+        if run_cli_command(candidate, &["--open-url", uri]) {
             return true;
         }
     }
@@ -764,7 +888,7 @@ fn dispatch_vscode_command_uri(executable_path: Option<&str>, uri: &str) -> bool
 }
 
 #[cfg(windows)]
-fn run_vscode_cli(program: &str, args: &[&str]) -> bool {
+fn run_cli_command(program: &str, args: &[&str]) -> bool {
     let escaped_program = escape_powershell_single_quoted(program);
     let escaped_args = args
         .iter()
@@ -800,6 +924,27 @@ fn vscode_cli_candidates(executable_path: Option<&str>) -> Vec<String> {
     }
 
     for path in known_vscode_cli_paths() {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn antigravity_cli_candidates(executable_path: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = executable_path {
+        if let Some(cli_path) = antigravity_cli_candidate(path) {
+            push_launch_candidate(&mut candidates, &cli_path);
+        }
+    }
+
+    for path in lookup_windows_command("antigravity.cmd") {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    for path in known_antigravity_cli_paths() {
         push_launch_candidate(&mut candidates, &path);
     }
 
@@ -979,6 +1124,25 @@ fn vscode_cli_candidate(path: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+fn antigravity_cli_candidate(path: &str) -> Option<String> {
+    let candidate = Path::new(path);
+    let file_name = candidate.file_name()?.to_str()?.to_ascii_lowercase();
+
+    if file_name == "antigravity.cmd" && candidate.exists() {
+        return Some(candidate.to_string_lossy().into_owned());
+    }
+
+    if file_name == "antigravity.exe" {
+        let cli = candidate.parent()?.join("bin").join("antigravity.cmd");
+        if cli.exists() {
+            return Some(cli.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
 #[allow(dead_code)]
 fn known_vscode_paths() -> Vec<String> {
     let mut paths = vec![
@@ -1009,6 +1173,61 @@ fn known_vscode_cli_paths() -> Vec<String> {
             .join("Microsoft VS Code")
             .join("bin")
             .join("code.cmd");
+        paths.push(base.to_string_lossy().into_owned());
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn antigravity_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = executable_path {
+        push_launch_candidate(&mut candidates, path);
+    }
+
+    for path in lookup_windows_command("Antigravity.exe") {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    for path in known_antigravity_paths() {
+        push_launch_candidate(&mut candidates, &path);
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn known_antigravity_paths() -> Vec<String> {
+    let mut paths = vec![
+        String::from(r"D:\Apps\Antigravity\Antigravity.exe"),
+        String::from(r"C:\Program Files\Antigravity\Antigravity.exe"),
+        String::from(r"C:\Program Files (x86)\Antigravity\Antigravity.exe"),
+    ];
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data).join("Programs").join("Antigravity");
+        paths.push(base.join("Antigravity.exe").to_string_lossy().into_owned());
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn known_antigravity_cli_paths() -> Vec<String> {
+    let mut paths = vec![
+        String::from(r"D:\Apps\Antigravity\bin\antigravity.cmd"),
+        String::from(r"C:\Program Files\Antigravity\bin\antigravity.cmd"),
+        String::from(r"C:\Program Files (x86)\Antigravity\bin\antigravity.cmd"),
+    ];
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data)
+            .join("Programs")
+            .join("Antigravity")
+            .join("bin")
+            .join("antigravity.cmd");
         paths.push(base.to_string_lossy().into_owned());
     }
 
@@ -1129,7 +1348,10 @@ mod tests {
         )]);
 
         assert_eq!(state.extension_pids, vec![202]);
+        assert_eq!(state.vscode_extension_pids, vec![202]);
+        assert!(state.antigravity_extension_pids.is_empty());
         assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 1);
     }
 
     #[test]
@@ -1146,6 +1368,41 @@ mod tests {
             state.vscode_launch_path.as_deref(),
             Some(r"D:\Apps\Microsoft VS Code\Code.exe")
         );
+        assert_eq!(state.restartable_process_count(), 0);
+    }
+
+    #[test]
+    fn classifies_antigravity_window_and_captures_launch_path() {
+        let state = classify_processes(vec![record(
+            304,
+            "Antigravity.exe",
+            Some(r"D:\Apps\Antigravity\Antigravity.exe"),
+            r#""D:\Apps\Antigravity\Antigravity.exe" --type=renderer --user-data-dir="C:\Users\me\AppData\Roaming\Antigravity" --app-user-model-id=Google.Antigravity --vscode-window-config=vscode:ag"#,
+        )]);
+
+        assert_eq!(state.antigravity_pids, vec![304]);
+        assert_eq!(
+            state.antigravity_launch_path.as_deref(),
+            Some(r"D:\Apps\Antigravity\Antigravity.exe")
+        );
+        assert!(state.vscode_pids.is_empty());
+        assert!(state.blocking_cli_pids.is_empty());
+        assert_eq!(state.restartable_process_count(), 0);
+    }
+
+    #[test]
+    fn classifies_antigravity_extension_worker_as_restartable() {
+        let state = classify_processes(vec![record(
+            305,
+            "codex.exe",
+            Some(r"C:\Users\me\.antigravity\extensions\openai.chatgpt\bin\windows-x86_64\codex.exe"),
+            r#"C:\Users\me\.antigravity\extensions\openai.chatgpt\bin\windows-x86_64\codex.exe app-server --analytics-default-enabled"#,
+        )]);
+
+        assert_eq!(state.extension_pids, vec![305]);
+        assert_eq!(state.antigravity_extension_pids, vec![305]);
+        assert!(state.vscode_extension_pids.is_empty());
+        assert!(state.blocking_cli_pids.is_empty());
         assert_eq!(state.restartable_process_count(), 1);
     }
 
@@ -1252,6 +1509,7 @@ mod tests {
         assert!(state.blocking_cli_pids.is_empty());
         assert!(state.extension_pids.is_empty());
         assert!(state.vscode_pids.is_empty());
+        assert!(state.antigravity_pids.is_empty());
         assert!(state.codex_app_pids.is_empty());
         assert_eq!(state.restartable_process_count(), 0);
     }
@@ -1268,6 +1526,7 @@ mod tests {
         assert!(state.blocking_cli_pids.is_empty());
         assert!(state.extension_pids.is_empty());
         assert!(state.vscode_pids.is_empty());
+        assert!(state.antigravity_pids.is_empty());
         assert!(state.codex_app_pids.is_empty());
     }
 }

@@ -75,6 +75,8 @@ pub struct SwitchAccountResult {
     pub closed_extension_processes: usize,
     pub closed_vscode_windows: usize,
     pub restarted_vscode: bool,
+    pub closed_antigravity_windows: usize,
+    pub restarted_antigravity: bool,
     pub closed_codex_apps: usize,
     pub restarted_codex_app: bool,
 }
@@ -148,10 +150,13 @@ pub async fn switch_account(
         &app,
         "switch",
         format!(
-            "Runtime snapshot: blockers={}, extension_workers={}, vscode_windows={}, codex_apps={}",
+            "Runtime snapshot: blockers={}, extension_workers={}, vscode_extension_workers={}, antigravity_extension_workers={}, vscode_windows={}, antigravity_windows={}, codex_apps={}",
             runtime_state.blocking_cli_pids.len(),
             runtime_state.extension_pids.len(),
+            runtime_state.vscode_extension_pids.len(),
+            runtime_state.antigravity_extension_pids.len(),
             runtime_state.vscode_pids.len(),
+            runtime_state.antigravity_pids.len(),
             runtime_state.codex_app_pids.len(),
         ),
     );
@@ -183,14 +188,28 @@ pub async fn switch_account(
         format!("Active account set to `{}`", account.name),
     );
 
-    let should_restart_vscode = !runtime_state.vscode_pids.is_empty();
-    let closed_extension_processes = if should_restart_vscode {
-        0
-    } else {
-        crate::runtime::terminate_pids(&runtime_state.extension_pids)
-    };
+    let should_restart_vscode =
+        !runtime_state.vscode_pids.is_empty() && !runtime_state.vscode_extension_pids.is_empty();
+    let should_restart_antigravity = !runtime_state.antigravity_pids.is_empty()
+        && !runtime_state.antigravity_extension_pids.is_empty();
+    let mut extension_pids_to_terminate = Vec::new();
+    if !should_restart_vscode {
+        extension_pids_to_terminate.extend(runtime_state.vscode_extension_pids.iter().copied());
+    }
+    if !should_restart_antigravity {
+        extension_pids_to_terminate.extend(runtime_state.antigravity_extension_pids.iter().copied());
+    }
+    extension_pids_to_terminate.sort_unstable();
+    extension_pids_to_terminate.dedup();
+    let closed_extension_processes =
+        crate::runtime::terminate_pids(&extension_pids_to_terminate);
     let closed_vscode_windows = if should_restart_vscode {
         crate::runtime::terminate_pids(&runtime_state.vscode_pids)
+    } else {
+        0
+    };
+    let closed_antigravity_windows = if should_restart_antigravity {
+        crate::runtime::terminate_pids(&runtime_state.antigravity_pids)
     } else {
         0
     };
@@ -199,8 +218,11 @@ pub async fn switch_account(
         &app,
         "switch",
         format!(
-            "Closed runtimes: extension_workers={}, vscode_windows={}, codex_apps={}",
-            closed_extension_processes, closed_vscode_windows, closed_codex_apps
+            "Closed runtimes: extension_workers={}, vscode_windows={}, antigravity_windows={}, codex_apps={}",
+            closed_extension_processes,
+            closed_vscode_windows,
+            closed_antigravity_windows,
+            closed_codex_apps
         ),
     );
     if should_restart_vscode {
@@ -210,12 +232,22 @@ pub async fn switch_account(
             "VS Code was closed so it can reopen cleanly and pick up the new auth state",
         );
     }
+    if should_restart_antigravity {
+        crate::app_logging::info(
+            &app,
+            "switch",
+            "Antigravity was closed so it can reopen cleanly and pick up the new auth state",
+        );
+    }
     let mut vscode_shutdown_pids = runtime_state.vscode_pids.clone();
-    vscode_shutdown_pids.extend(runtime_state.extension_pids.iter().copied());
+    vscode_shutdown_pids.extend(runtime_state.vscode_extension_pids.iter().copied());
+    let mut antigravity_shutdown_pids = runtime_state.antigravity_pids.clone();
+    antigravity_shutdown_pids.extend(runtime_state.antigravity_extension_pids.iter().copied());
     let restarted_vscode = should_restart_vscode;
+    let restarted_antigravity = should_restart_antigravity;
     let restarted_codex_app = closed_codex_apps > 0;
 
-    if should_restart_vscode || closed_codex_apps > 0 {
+    if should_restart_vscode || should_restart_antigravity || closed_codex_apps > 0 {
         crate::app_logging::info(
             &app,
             "switch",
@@ -249,6 +281,40 @@ pub async fn switch_account(
                         &app_for_vscode_restart,
                         "switch",
                         format!("VS Code reopen failed for `{launch_target}`"),
+                    );
+                }
+            });
+        }
+
+        if should_restart_antigravity {
+            let app_for_antigravity_restart = app.clone();
+            let antigravity_launch_path = runtime_state.antigravity_launch_path.clone();
+            let antigravity_shutdown_pids_for_restart = antigravity_shutdown_pids.clone();
+
+            std::thread::spawn(move || {
+                crate::runtime::wait_for_pids_to_exit(
+                    &antigravity_shutdown_pids_for_restart,
+                    Duration::from_secs(5),
+                );
+                let launch_target = antigravity_launch_path
+                    .as_deref()
+                    .unwrap_or("Antigravity.exe");
+                let restarted = crate::runtime::relaunch_antigravity(
+                    antigravity_launch_path.as_deref(),
+                    &antigravity_shutdown_pids_for_restart,
+                );
+
+                if restarted {
+                    crate::app_logging::info(
+                        &app_for_antigravity_restart,
+                        "switch",
+                        format!("Antigravity reopened using `{launch_target}`"),
+                    );
+                } else {
+                    crate::app_logging::warn(
+                        &app_for_antigravity_restart,
+                        "switch",
+                        format!("Antigravity reopen failed for `{launch_target}`"),
                     );
                 }
             });
@@ -325,6 +391,8 @@ pub async fn switch_account(
         closed_extension_processes,
         closed_vscode_windows,
         restarted_vscode,
+        closed_antigravity_windows,
+        restarted_antigravity,
         closed_codex_apps,
         restarted_codex_app,
     })

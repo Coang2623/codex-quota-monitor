@@ -72,6 +72,8 @@ export interface SwitchAccountResult {
   closed_extension_processes: number;
   closed_vscode_windows: number;
   restarted_vscode: boolean;
+  closed_antigravity_windows: number;
+  restarted_antigravity: boolean;
   closed_codex_apps: number;
   restarted_codex_app: boolean;
 }

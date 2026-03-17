@@ -345,6 +345,21 @@ function App() {
       parts.push("requested VS Code reopen");
     }
 
+    if (result.closed_antigravity_windows > 0) {
+      parts.push(
+        result.restarted_antigravity
+          ? `closed Antigravity (${result.closed_antigravity_windows} process${
+              result.closed_antigravity_windows === 1 ? "" : "es"
+            }) and requested reopen`
+          : `closed Antigravity (${result.closed_antigravity_windows} process${
+              result.closed_antigravity_windows === 1 ? "" : "es"
+            })`
+      );
+    }
+    else if (result.restarted_antigravity) {
+      parts.push("requested Antigravity reopen");
+    }
+
     if (result.closed_extension_processes > 0) {
       parts.push(`closed ${result.closed_extension_processes} Codex extension worker${
         result.closed_extension_processes === 1 ? "" : "s"
@@ -622,7 +637,7 @@ function App() {
                         {hasBlockingProcesses
                           ? `${blockingProcessCount} CLI blocking`
                           : hasRestartableRuntimes
-                            ? "VS Code/Codex open"
+                            ? "Editor/Codex open"
                             : "No Codex runtime"}
                       </span>
                     </span>

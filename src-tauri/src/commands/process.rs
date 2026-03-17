@@ -7,7 +7,7 @@ use crate::runtime::inspect_runtime_state;
 pub struct CodexProcessInfo {
     /// Number of blocking standalone Codex CLI processes
     pub count: usize,
-    /// Number of restartable runtimes such as VS Code, extension workers, or Codex app
+    /// Number of restartable runtimes such as VS Code, Antigravity, extension workers, or Codex app
     pub background_count: usize,
     /// Whether switching is allowed (no standalone CLI processes running)
     pub can_switch: bool,
