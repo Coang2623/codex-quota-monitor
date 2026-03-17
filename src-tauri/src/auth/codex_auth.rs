@@ -1,4 +1,4 @@
-//! Account switching logic - writes credentials to ~/.codex/auth.json
+//! Codex auth file logic - writes credentials to ~/.codex/auth.json
 
 use std::fs;
 use std::path::PathBuf;

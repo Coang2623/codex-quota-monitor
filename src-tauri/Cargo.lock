@@ -501,8 +501,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-switcher"
-version = "0.1.6"
+name = "codex-quota-monitor"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

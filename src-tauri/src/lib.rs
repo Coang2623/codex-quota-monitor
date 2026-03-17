@@ -1,4 +1,4 @@
-//! Codex Switcher - Multi-account manager for Codex CLI
+//! Codex Quota Monitor - quota monitoring and multi-account management for Codex
 
 pub mod api;
 pub mod app_logging;
@@ -23,7 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app_logging::info(app.handle(), "app", "Codex Switcher started");
+            app_logging::info(app.handle(), "app", "Codex Quota Monitor started");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

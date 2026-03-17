@@ -483,11 +483,11 @@ function App() {
       setIsExportingFull(true);
       const selected = await save({
         title: "Export Full Encrypted Account Config",
-        defaultPath: "codex-switcher-full.cswf",
+        defaultPath: "codex-quota-monitor-full.cqm",
         filters: [
           {
-            name: "Codex Switcher Full Backup",
-            extensions: ["cswf"],
+            name: "Codex Quota Monitor Backup",
+            extensions: ["cqm", "cswf"],
           },
         ],
       });
@@ -512,8 +512,8 @@ function App() {
         title: "Import Full Encrypted Account Config",
         filters: [
           {
-            name: "Codex Switcher Full Backup",
-            extensions: ["cswf"],
+            name: "Codex Quota Monitor Backup",
+            extensions: ["cqm"],
           },
         ],
       });
@@ -591,13 +591,13 @@ function App() {
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_max-content] md:items-center md:gap-4">
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              <div className="h-10 w-10 rounded-xl bg-gray-900 flex items-center justify-center text-white font-bold text-lg">
-                C
+              <div className="h-10 w-10 rounded-xl bg-gray-900 flex items-center justify-center text-white font-black text-xs tracking-tight">
+                QM
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl font-bold text-gray-900 tracking-tight">
-                    Codex Switcher
+                    Codex Quota Monitor
                   </h1>
                   {processInfo && (
                     <span
@@ -629,7 +629,7 @@ function App() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500">
-                  Multi-account manager for Codex CLI
+                  Quota monitoring and multi-account control for Codex
                 </p>
               </div>
             </div>

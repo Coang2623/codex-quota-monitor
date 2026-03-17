@@ -1,12 +1,12 @@
 [package]
-name = "codex-switcher"
-version = "0.1.6"
-description = "A multi-account manager for Codex CLI"
-authors = ["lampese"]
+name = "codex-quota-monitor"
+version = "0.1.7"
+description = "A desktop quota monitor and multi-account manager for Codex"
+authors = ["Coang2623"]
 edition = "2021"
 
 [lib]
-name = "codex_switcher_lib"
+name = "codex_quota_monitor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

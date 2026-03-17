@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="src-tauri/icons/logo.svg" alt="Codex Switcher logo" width="120" height="120">
+  <img src="src-tauri/icons/logo.svg" alt="Codex Quota Monitor logo" width="120" height="120">
 </p>
 
-<h1 align="center">Codex Switcher</h1>
+<h1 align="center">Codex Quota Monitor</h1>
 
 <p align="center">
-  A desktop account switcher and quota monitor for Codex CLI, the VS Code Codex extension, and the Codex app.
+  A desktop quota monitor with multi-account switching for Codex CLI, the VS Code Codex extension, and the Codex app.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 
 ## Overview
 
-Codex Switcher is an unofficial desktop utility for people who personally manage multiple Codex / ChatGPT accounts and want a faster way to:
+Codex Quota Monitor is an unofficial desktop utility for people who personally manage multiple Codex / ChatGPT accounts and want a faster way to:
 
 - switch the active `~/.codex/auth.json`
 - monitor 5-hour and 7-day quota usage
@@ -94,7 +94,7 @@ pnpm tauri build --no-bundle --no-sign
 
 Typical output paths:
 
-- App binary: `src-tauri/target/release/codex-switcher.exe`
+- App binary: `src-tauri/target/release/codex-quota-monitor.exe`
 - Bundles: `src-tauri/target/release/bundle/`
 
 ## Project Structure

@@ -7,10 +7,19 @@ use anyhow::{Context, Result};
 
 use crate::types::{AccountsStore, AuthData, StoredAccount};
 
-/// Get the path to the codex-switcher config directory
+const CONFIG_DIR_NAME: &str = ".codex-quota-monitor";
+const LEGACY_CONFIG_DIR_NAME: &str = ".codex-switcher";
+
+/// Get the path to the Codex Quota Monitor config directory
 pub fn get_config_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".codex-switcher"))
+    Ok(home.join(CONFIG_DIR_NAME))
+}
+
+/// Get the path to the legacy Codex Switcher config directory.
+fn get_legacy_config_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not find home directory")?;
+    Ok(home.join(LEGACY_CONFIG_DIR_NAME))
 }
 
 /// Get the path to accounts.json
@@ -18,8 +27,51 @@ pub fn get_accounts_file() -> Result<PathBuf> {
     Ok(get_config_dir()?.join("accounts.json"))
 }
 
+fn get_legacy_accounts_file() -> Result<PathBuf> {
+    Ok(get_legacy_config_dir()?.join("accounts.json"))
+}
+
+fn migrate_legacy_accounts_file_if_needed() -> Result<()> {
+    let current_path = get_accounts_file()?;
+    if current_path.exists() {
+        return Ok(());
+    }
+
+    let legacy_path = get_legacy_accounts_file()?;
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = current_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create new config directory during migration: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    fs::copy(&legacy_path, &current_path).with_context(|| {
+        format!(
+            "Failed to migrate legacy accounts file from {} to {}",
+            legacy_path.display(),
+            current_path.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&current_path, perms)?;
+    }
+
+    Ok(())
+}
+
 /// Load the accounts store from disk
 pub fn load_accounts() -> Result<AccountsStore> {
+    migrate_legacy_accounts_file_if_needed()?;
     let path = get_accounts_file()?;
 
     if !path.exists() {

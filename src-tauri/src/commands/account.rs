@@ -30,12 +30,14 @@ use std::os::windows::process::CommandExt;
 #[allow(dead_code)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const SLIM_EXPORT_PREFIX: &str = "css1.";
+const SLIM_EXPORT_PREFIX: &str = "cqm1.";
+const LEGACY_SLIM_EXPORT_PREFIX: &str = "css1.";
 const SLIM_FORMAT_VERSION: u8 = 1;
 const SLIM_AUTH_API_KEY: u8 = 0;
 const SLIM_AUTH_CHATGPT: u8 = 1;
 
-const FULL_FILE_MAGIC: &[u8; 4] = b"CSWF";
+const FULL_FILE_MAGIC: &[u8; 4] = b"CQMF";
+const LEGACY_FULL_FILE_MAGIC: &[u8; 4] = b"CSWF";
 const FULL_FILE_VERSION: u8 = 1;
 const FULL_SALT_LEN: usize = 16;
 const FULL_NONCE_LEN: usize = 24;
@@ -511,6 +513,7 @@ fn decode_slim_payload(payload: &str) -> anyhow::Result<SlimPayload> {
 
     let encoded = normalized
         .strip_prefix(SLIM_EXPORT_PREFIX)
+        .or_else(|| normalized.strip_prefix(LEGACY_SLIM_EXPORT_PREFIX))
         .unwrap_or(&normalized);
 
     let compressed = URL_SAFE_NO_PAD
@@ -695,7 +698,8 @@ fn decode_full_encrypted_store(
         anyhow::bail!("Encrypted file is invalid or truncated");
     }
 
-    if &file_bytes[..4] != FULL_FILE_MAGIC {
+    let magic = &file_bytes[..4];
+    if magic != FULL_FILE_MAGIC && magic != LEGACY_FULL_FILE_MAGIC {
         anyhow::bail!("Encrypted file header is invalid");
     }
 

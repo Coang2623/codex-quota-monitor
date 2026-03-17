@@ -142,7 +142,7 @@ fn classify_processes(processes: Vec<ProcessRecord>) -> RuntimeState {
     let mut state = RuntimeState::default();
 
     for process in processes {
-        if is_switcher_process(&process) || is_runtime_inspector_process(&process) {
+        if is_monitor_process(&process) || is_runtime_inspector_process(&process) {
             continue;
         }
 
@@ -281,9 +281,9 @@ fn parse_windows_cim_output(stdout: &[u8]) -> anyhow::Result<Vec<ProcessRecord>>
     Ok(processes)
 }
 
-fn is_switcher_process(process: &ProcessRecord) -> bool {
+fn is_monitor_process(process: &ProcessRecord) -> bool {
     let haystack = process.combined_haystack();
-    haystack.contains("codex-switcher") || haystack.contains("codex switcher")
+    haystack.contains("codex-quota-monitor") || haystack.contains("codex quota monitor")
 }
 
 fn is_runtime_inspector_process(process: &ProcessRecord) -> bool {
@@ -350,7 +350,7 @@ fn is_codex_app_process(process: &ProcessRecord) -> bool {
 }
 
 fn is_standalone_codex_cli(process: &ProcessRecord) -> bool {
-    if is_switcher_process(process)
+    if is_monitor_process(process)
         || is_extension_runtime(process)
         || is_vscode_process(process)
         || is_codex_app_process(process)

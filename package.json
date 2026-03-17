@@ -1,8 +1,8 @@
 {
-  "name": "codex-switcher",
+  "name": "codex-quota-monitor",
   "private": true,
-  "version": "0.1.6",
-  "description": "A multi-account manager for Codex CLI",
+  "version": "0.1.7",
+  "description": "A desktop quota monitor and multi-account manager for Codex",
   "type": "module",
   "scripts": {
     "dev": "vite",
