@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -61,6 +61,16 @@ function formatRelativeReleaseDate(value: string | null): string | null {
   }).format(publishedAt);
 }
 
+type ActiveSessionCard = {
+  key: string;
+  label: string;
+  status: string;
+  detail: string;
+  tone: "amber" | "blue" | "slate";
+  isPrioritized: boolean;
+  defaultOrder: number;
+};
+
 function App() {
   const {
     accounts,
@@ -113,12 +123,19 @@ function App() {
     "deadline_asc" | "deadline_desc" | "remaining_desc" | "remaining_asc"
   >("deadline_asc");
   const [logEntries, setLogEntries] = useState<AppLogEntry[]>([]);
+  const [highlightedActiveSessionKeys, setHighlightedActiveSessionKeys] = useState<Set<string>>(
+    new Set()
+  );
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const processSnapshotRef = useRef<string | null>(null);
   const switchResetTimerRef = useRef<number | null>(null);
   const updateSnapshotRef = useRef<string | null>(null);
+  const activeSessionCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const activeSessionCardPositionsRef = useRef<Map<string, DOMRect>>(new Map());
+  const activeSessionPrioritySnapshotRef = useRef<Map<string, boolean>>(new Map());
+  const activeSessionHighlightTimersRef = useRef<Record<string, number>>({});
   const updateLifecycleRef = useRef<string | null>(null);
 
   const appendLog = useCallback(
@@ -704,9 +721,13 @@ function App() {
   const restartableRuntimeCount = processInfo?.background_count ?? 0;
   const hasBlockingProcesses = blockingProcessCount > 0;
   const hasRestartableRuntimes = restartableRuntimeCount > 0;
-  const activeSessionCards = processInfo
-    ? [
-        {
+  const activeSessionCards = useMemo<ActiveSessionCard[]>(() => {
+    if (!processInfo) {
+      return [];
+    }
+
+    const cards: ActiveSessionCard[] = [
+      {
           key: "cli",
           label: "Standalone CLI",
           status: hasBlockingProcesses ? "Blocking" : "Clear",
@@ -714,6 +735,8 @@ function App() {
             ? `${pluralize(blockingProcessCount, "process")} still running`
             : "No standalone CLI detected",
           tone: hasBlockingProcesses ? "amber" : "slate",
+          isPrioritized: hasBlockingProcesses,
+          defaultOrder: 0,
         },
         {
           key: "vscode",
@@ -736,6 +759,9 @@ function App() {
               : processInfo.vscode_window_count > 0
                 ? "slate"
                 : "slate",
+          isPrioritized:
+            processInfo.vscode_extension_count > 0 || processInfo.vscode_window_count > 0,
+          defaultOrder: 1,
         },
         {
           key: "antigravity",
@@ -758,6 +784,10 @@ function App() {
               : processInfo.antigravity_window_count > 0
                 ? "slate"
                 : "slate",
+          isPrioritized:
+            processInfo.antigravity_extension_count > 0 ||
+            processInfo.antigravity_window_count > 0,
+          defaultOrder: 2,
         },
         {
           key: "codex-app",
@@ -768,9 +798,18 @@ function App() {
               ? `${pluralize(processInfo.codex_app_count, "process")} running`
               : "Codex app is closed",
           tone: processInfo.codex_app_count > 0 ? "blue" : "slate",
+          isPrioritized: processInfo.codex_app_count > 0,
+          defaultOrder: 3,
         },
-      ]
-    : [];
+      ];
+
+    return cards.sort((a, b) => {
+      if (a.isPrioritized !== b.isPrioritized) {
+        return Number(b.isPrioritized) - Number(a.isPrioritized);
+      }
+      return a.defaultOrder - b.defaultOrder;
+    });
+  }, [blockingProcessCount, hasBlockingProcesses, processInfo]);
   const activeSessionKindCount = activeSessionCards.filter(
     (card) => card.status === "Active" || card.status === "Blocking"
   ).length;
@@ -855,6 +894,102 @@ function App() {
       return a.name.localeCompare(b.name);
     });
   }, [otherAccounts, otherAccountsSort]);
+
+  useLayoutEffect(() => {
+    if (activeSessionCards.length === 0) {
+      activeSessionCardPositionsRef.current = new Map();
+      return;
+    }
+
+    const previousPositions = activeSessionCardPositionsRef.current;
+    const nextPositions = new Map<string, DOMRect>();
+    const frameIds: number[] = [];
+
+    activeSessionCards.forEach((card) => {
+      const node = activeSessionCardRefs.current[card.key];
+      if (!node) return;
+      nextPositions.set(card.key, node.getBoundingClientRect());
+    });
+
+    if (previousPositions.size > 0) {
+      activeSessionCards.forEach((card) => {
+        const node = activeSessionCardRefs.current[card.key];
+        const previous = previousPositions.get(card.key);
+        const next = nextPositions.get(card.key);
+
+        if (!node || !previous || !next) return;
+
+        const deltaX = previous.left - next.left;
+        const deltaY = previous.top - next.top;
+
+        if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) {
+          return;
+        }
+
+        node.style.transition = "none";
+        node.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+        node.style.zIndex = "1";
+
+        const frameId = window.requestAnimationFrame(() => {
+          node.style.transition =
+            "transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, border-color 220ms ease, background-color 220ms ease";
+          node.style.transform = "";
+          node.style.zIndex = "";
+        });
+
+        frameIds.push(frameId);
+      });
+    }
+
+    activeSessionCardPositionsRef.current = nextPositions;
+
+    return () => {
+      frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId));
+    };
+  }, [activeSessionCards]);
+
+  useEffect(() => {
+    const previousPriorityMap = activeSessionPrioritySnapshotRef.current;
+    const nextPriorityMap = new Map(activeSessionCards.map((card) => [card.key, card.isPrioritized]));
+    const promotedKeys = activeSessionCards
+      .filter((card) => card.isPrioritized && !previousPriorityMap.get(card.key))
+      .map((card) => card.key);
+
+    activeSessionPrioritySnapshotRef.current = nextPriorityMap;
+
+    setHighlightedActiveSessionKeys((prev) => {
+      const next = new Set(
+        [...prev].filter((key) => nextPriorityMap.get(key))
+      );
+      promotedKeys.forEach((key) => next.add(key));
+      return next;
+    });
+
+    promotedKeys.forEach((key) => {
+      const existingTimer = activeSessionHighlightTimersRef.current[key];
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+      }
+
+      activeSessionHighlightTimersRef.current[key] = window.setTimeout(() => {
+        setHighlightedActiveSessionKeys((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        delete activeSessionHighlightTimersRef.current[key];
+      }, 1600);
+    });
+  }, [activeSessionCards]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(activeSessionHighlightTimersRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 xl:grid xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -1197,17 +1332,28 @@ function App() {
               </span>
             </div>
 
-            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {activeSessionCards.map((card) => (
                 <div
                   key={card.key}
+                  ref={(node) => {
+                    activeSessionCardRefs.current[card.key] = node;
+                  }}
                   className={`rounded-xl border p-4 ${
                     card.tone === "amber"
                       ? "border-amber-200 bg-amber-50/60"
                       : card.tone === "blue"
                         ? "border-blue-200 bg-blue-50/60"
                         : "border-gray-200 bg-gray-50"
-                  }`}
+                  } ${
+                    card.isPrioritized
+                      ? "shadow-[0_14px_32px_-24px_rgba(37,99,235,0.45)] ring-1 ring-inset ring-blue-100/70"
+                      : ""
+                  } ${
+                    highlightedActiveSessionKeys.has(card.key)
+                      ? `active-session-card-promoted active-session-card-promoted--${card.tone}`
+                      : ""
+                  } active-session-card will-change-transform`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-gray-900">{card.label}</p>

@@ -1,1 +1,108 @@
 @import "tailwindcss";
+
+.active-session-card {
+  position: relative;
+  overflow: hidden;
+  --active-session-glow-soft: rgba(37, 99, 235, 0.12);
+  --active-session-glow-strong: rgba(37, 99, 235, 0.28);
+  --active-session-ring-soft: rgba(96, 165, 250, 0.22);
+  --active-session-ring-strong: rgba(59, 130, 246, 0.65);
+  --active-session-border-rest: rgba(226, 232, 240, 0.9);
+}
+
+.active-session-card-promoted--blue {
+  --active-session-glow-soft: rgba(37, 99, 235, 0.12);
+  --active-session-glow-strong: rgba(37, 99, 235, 0.28);
+  --active-session-ring-soft: rgba(96, 165, 250, 0.22);
+  --active-session-ring-strong: rgba(59, 130, 246, 0.65);
+  --active-session-border-rest: rgba(191, 219, 254, 0.95);
+}
+
+.active-session-card-promoted--amber {
+  --active-session-glow-soft: rgba(217, 119, 6, 0.12);
+  --active-session-glow-strong: rgba(217, 119, 6, 0.26);
+  --active-session-ring-soft: rgba(251, 191, 36, 0.24);
+  --active-session-ring-strong: rgba(245, 158, 11, 0.62);
+  --active-session-border-rest: rgba(253, 230, 138, 0.95);
+}
+
+.active-session-card-promoted--slate {
+  --active-session-glow-soft: rgba(71, 85, 105, 0.12);
+  --active-session-glow-strong: rgba(71, 85, 105, 0.24);
+  --active-session-ring-soft: rgba(148, 163, 184, 0.2);
+  --active-session-ring-strong: rgba(100, 116, 139, 0.5);
+  --active-session-border-rest: rgba(226, 232, 240, 0.95);
+}
+
+.active-session-card-promoted {
+  animation: active-session-card-glow 1.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.active-session-card-promoted::after {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.06) 34%,
+    rgba(255, 255, 255, 0.58) 50%,
+    rgba(255, 255, 255, 0.12) 64%,
+    transparent 78%
+  );
+  transform: translateX(-135%) skewX(-18deg);
+  animation: active-session-card-sheen 1.05s ease;
+}
+
+@keyframes active-session-card-glow {
+  0% {
+    box-shadow:
+      0 0 0 0 rgba(255, 255, 255, 0),
+      0 14px 32px -24px var(--active-session-glow-soft);
+    border-color: color-mix(in srgb, var(--active-session-ring-soft) 75%, white);
+  }
+  28% {
+    box-shadow:
+      0 0 0 1px var(--active-session-ring-soft),
+      0 22px 36px -22px var(--active-session-glow-strong);
+    border-color: var(--active-session-ring-strong);
+  }
+  62% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--active-session-ring-soft) 70%, white),
+      0 16px 30px -24px color-mix(in srgb, var(--active-session-glow-strong) 75%, transparent);
+    border-color: color-mix(in srgb, var(--active-session-ring-strong) 65%, white);
+  }
+  100% {
+    box-shadow:
+      0 14px 32px -24px color-mix(in srgb, var(--active-session-glow-strong) 65%, transparent),
+      0 0 0 0 rgba(255, 255, 255, 0);
+    border-color: var(--active-session-border-rest);
+  }
+}
+
+@keyframes active-session-card-sheen {
+  0% {
+    opacity: 0;
+    transform: translateX(-135%) skewX(-18deg);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(140%) skewX(-18deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .active-session-card-promoted {
+    animation: none;
+  }
+
+  .active-session-card-promoted::after {
+    animation: none;
+    display: none;
+  }
+}

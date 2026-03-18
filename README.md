@@ -140,6 +140,19 @@ Typical output paths:
 - Account switching logic: `src-tauri/src/commands/account.rs`
 - Runtime detection and relaunch logic: `src-tauri/src/runtime.rs`
 
+## Maintenance Docs
+
+For maintenance, reverse-engineering, and future upgrades, see the documents in `docs/maintenance/`:
+
+- `docs/maintenance/README.md`
+- `docs/maintenance/architecture.md`
+- `docs/maintenance/api-spec.md`
+- `docs/maintenance/db-spec.md`
+- `docs/maintenance/feature-spec.md`
+- `docs/maintenance/sequence-flow.md`
+- `docs/maintenance/screen-spec.md`
+- `docs/maintenance/design-analysis.md`
+
 ## Disclaimer
 
 This project is intended only for people managing accounts they personally own.

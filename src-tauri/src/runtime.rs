@@ -77,41 +77,6 @@ pub(crate) fn wait_for_pids_to_exit(pids: &[u32], timeout: Duration) {
     }
 }
 
-pub(crate) fn reload_vscode_windows(executable_path: Option<&str>) -> bool {
-    const RELOAD_URI: &str = "vscode://command/workbench.action.reloadWindow";
-    const OPEN_SIDEBAR_URI: &str = "vscode://command/chatgpt.openSidebar";
-
-    #[cfg(windows)]
-    {
-        if dispatch_vscode_command_uri(executable_path, RELOAD_URI) {
-            sleep(Duration::from_millis(1200));
-            let _ = dispatch_vscode_command_uri(executable_path, OPEN_SIDEBAR_URI);
-            return true;
-        }
-
-        return false;
-    }
-
-    #[cfg(not(windows))]
-    {
-        if let Some(path) = executable_path {
-            if launch_detached(path, &["--open-url", RELOAD_URI]) {
-                sleep(Duration::from_millis(1200));
-                let _ = launch_detached(path, &["--open-url", OPEN_SIDEBAR_URI]);
-                return true;
-            }
-        }
-
-        if launch_detached("code", &["--open-url", RELOAD_URI]) {
-            sleep(Duration::from_millis(1200));
-            let _ = launch_detached("code", &["--open-url", OPEN_SIDEBAR_URI]);
-            return true;
-        }
-
-        false
-    }
-}
-
 pub(crate) fn relaunch_vscode(executable_path: Option<&str>, existing_pids: &[u32]) -> bool {
     #[cfg(windows)]
     {
@@ -610,43 +575,6 @@ fn launch_windows_store_app(app_id: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn launch_uri_detached(uri: &str) -> bool {
-    Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!(
-                "Start-Process -FilePath '{}'",
-                escape_powershell_single_quoted(uri)
-            ),
-        ])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn wait_for_matching_process(matcher: fn(&ProcessRecord) -> bool, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-
-    while Instant::now() < deadline {
-        let has_match = list_processes()
-            .map(|processes| processes.into_iter().any(|process| matcher(&process)))
-            .unwrap_or(false);
-
-        if has_match {
-            return true;
-        }
-
-        sleep(Duration::from_millis(200));
-    }
-
-    false
-}
-
-#[cfg(windows)]
 fn relaunch_vscode_with_retries(
     executable_candidates: &[String],
     cli_candidates: &[String],
@@ -885,19 +813,6 @@ fn vscode_launch_candidates(executable_path: Option<&str>) -> Vec<String> {
     }
 
     candidates
-}
-
-#[cfg(windows)]
-fn dispatch_vscode_command_uri(executable_path: Option<&str>, uri: &str) -> bool {
-    let cli_candidates = vscode_cli_candidates(executable_path);
-
-    for candidate in &cli_candidates {
-        if run_cli_command(candidate, &["--open-url", uri]) {
-            return true;
-        }
-    }
-
-    launch_uri_detached(uri)
 }
 
 #[cfg(windows)]
